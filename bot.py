@@ -195,7 +195,7 @@ def donate(message):
     donate_kb.add(
         types.InlineKeyboardButton(
             "❤️ Пожертвовать",
-            url="https://pro.selfwork.ru/to/02197162",
+            url="https://pro.selfwork.ru/kopim/odno_dobroe_slovo",
         )
     )
     bot.send_message(
