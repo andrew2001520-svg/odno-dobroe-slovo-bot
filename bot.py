@@ -20,8 +20,6 @@ def my_id(message):
         f"Ваш Telegram ID: <code>{message.from_user.id}</code>",
         parse_mode="HTML"
     )
-        reply_markup=keyboard(),
-    )
 
 @bot.message_handler(func=lambda m: m.text == "💬 Доброе слово")
 def good_word(message):
