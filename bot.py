@@ -206,7 +206,7 @@ def donate(message):
         types.InlineKeyboardButton(
             "❤️ Пожертвовать",
             url="https://pro.selfwork.ru/to/02197162",
-    )
+            
     bot.send_message(
         message.chat.id,
         "❤️ <b>Поддержать проект</b>\n\n"
