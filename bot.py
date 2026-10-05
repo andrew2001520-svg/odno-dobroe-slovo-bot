@@ -265,4 +265,52 @@ def fallback(message):
     start(message)
 
 if __name__ == "__main__":
+    ADMIN_ID = 5844296950
+
+
+@bot.message_handler(func=lambda m: m.text == "✍️ Предложить фразу")
+def suggest_phrase(message):
+    msg = bot.send_message(
+        message.chat.id,
+        "✍️ <b>Предложить свою фразу</b>\n\n"
+        "Напишите фразу, которую вы хотели бы однажды увидеть "
+        "на улицах города ❤️\n\n"
+        "Отправьте её одним сообщением.",
+        parse_mode="HTML",
+    )
+    bot.register_next_step_handler(msg, receive_phrase)
+
+
+def receive_phrase(message):
+    phrase = (message.text or "").strip()
+
+    if not phrase:
+        bot.send_message(
+            message.chat.id,
+            "Пожалуйста, отправьте фразу текстовым сообщением ❤️",
+            reply_markup=keyboard(),
+        )
+        return
+
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "не указан"
+
+    bot.send_message(
+        ADMIN_ID,
+        "💌 <b>Новая предложенная фраза</b>\n\n"
+        f"«{phrase}»\n\n"
+        f"👤 От: {user.first_name or 'Пользователь'}\n"
+        f"🔗 Telegram: {username}\n"
+        f"🆔 ID: <code>{user.id}</code>",
+        parse_mode="HTML",
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "❤️ <b>Спасибо!</b>\n\n"
+        "Ваша фраза принята.\n"
+        "Возможно, однажды именно она появится на улицах города.",
+        parse_mode="HTML",
+        reply_markup=keyboard(),
+    )
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
