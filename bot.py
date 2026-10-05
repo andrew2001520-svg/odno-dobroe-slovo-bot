@@ -1,4 +1,4 @@
-import os, random, html, json, threading, time
+import os, random, html, json, threading, time, zipfile
 from datetime import datetime
 from urllib.parse import quote
 import telebot
@@ -14,6 +14,8 @@ BANNERS_FILE = "banners.json"
 USERS_FILE = "users.json"
 PHRASES_FILE = "suggested_phrases.json"
 VOTE_FILE = "vote.json"
+REPORTS_FILE = "reports.json"
+EVENTS_FILE = "events.json"
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -117,6 +119,42 @@ def save_vote():
 
 vote_data=load_vote()
 admin_vote_setup={}
+reports_data=load_json_list(REPORTS_FILE)
+admin_report_state={}
+events_data=load_json_list(EVENTS_FILE)
+NOTIFY_MILESTONES={10,25,50,100,250,500,1000}
+
+def log_event(kind, text, notify=False):
+    event={"time":datetime.now().strftime("%d.%m.%Y %H:%M"),"kind":kind,"text":text}
+    events_data.append(event)
+    if len(events_data)>300:
+        del events_data[:-300]
+    save_json_list(EVENTS_FILE,events_data)
+    if notify:
+        try:
+            bot.send_message(ADMIN_ID,f"🔔 <b>{html.escape(kind)}</b>\n\n{html.escape(text)}",parse_mode="HTML")
+        except Exception:
+            pass
+
+def show_event_log(chat_id,page=0):
+    page=max(0,page)
+    per_page=10
+    rev=list(reversed(events_data))
+    start=page*per_page
+    items=rev[start:start+per_page]
+    if not items:
+        bot.send_message(chat_id,"📋 Журнал событий пока пуст.",reply_markup=admin_menu())
+        return
+    lines=["📋 <b>Журнал событий</b>",""]
+    for e in items:
+        lines.append(f"• <b>{html.escape(e.get('time',''))}</b> — {html.escape(e.get('kind',''))}\n{html.escape(e.get('text',''))}")
+    kb=types.InlineKeyboardMarkup()
+    nav=[]
+    if page>0: nav.append(types.InlineKeyboardButton("◀️ Новее",callback_data=f"events_{page-1}"))
+    if start+per_page<len(rev): nav.append(types.InlineKeyboardButton("Старее ▶️",callback_data=f"events_{page+1}"))
+    if nav: kb.row(*nav)
+    kb.add(types.InlineKeyboardButton("🗑 Очистить журнал",callback_data="events_clear"))
+    bot.send_message(chat_id,"\n\n".join(lines),parse_mode="HTML",reply_markup=kb)
 
 def remember_user(message):
     if not message.from_user:
@@ -167,8 +205,12 @@ def daily_kindness(message):
 
 @bot.callback_query_handler(func=lambda c: c.data in ("daily_on", "daily_off"))
 def daily_toggle(c):
-    if c.data == "daily_on": subscribers.add(c.message.chat.id); text = "❤️ «Добро дня» включено."
-    else: subscribers.discard(c.message.chat.id); text = "🔕 «Добро дня» отключено."
+    if c.data == "daily_on":
+        subscribers.add(c.message.chat.id); text = "❤️ «Добро дня» включено."
+        log_event("Добро дня","Новый пользователь включил ежедневную добрую фразу.",notify=True)
+    else:
+        subscribers.discard(c.message.chat.id); text = "🔕 «Добро дня» отключено."
+        log_event("Добро дня","Пользователь отключил ежедневную добрую фразу.")
     save_subscribers(); bot.answer_callback_query(c.id, text); bot.edit_message_text(text, c.message.chat.id, c.message.message_id)
 
 # 3. Предложить фразу
@@ -189,6 +231,7 @@ def receive_phrase(message):
     u = message.from_user; username = "@" + u.username if u.username else "не указан"
     phrases_data.append({"text":phrase,"user_id":u.id,"username":u.username or "","name":u.first_name or "","status":"new","created":datetime.utcnow().isoformat(timespec="seconds")})
     save_json_list(PHRASES_FILE,phrases_data)
+    log_event("Новая фраза", f"Пользователь предложил: «{phrase}»")
     bot.send_message(ADMIN_ID, "💌 <b>Новая предложенная фраза</b>\n\n" + f"«{html.escape(phrase)}»\n\n👤 {html.escape(u.first_name or 'Пользователь')}\n🔗 {html.escape(username)}\n🆔 <code>{u.id}</code>", parse_mode="HTML")
     bot.send_message(message.chat.id, "❤️ <b>Спасибо!</b> Ваша фраза принята. Возможно, однажды именно она появится на улицах города.", parse_mode="HTML", reply_markup=keyboard())
 
@@ -212,9 +255,43 @@ def next_banner(message):
     bot.send_message(message.chat.id, "🎯 <b>Следующий баннер</b>\n\nМы готовим следующий уличный баннер проекта. Вы можете помочь с размещением или принять участие в выборе фразы ❤️", parse_mode="HTML", reply_markup=kb)
 
 # 7. Отчёты
+def report_caption(r, index=None):
+    parts=["📊 <b>Отчёт проекта</b>"]
+    if r.get("title"): parts.append("\n<b>"+html.escape(r["title"])+"</b>")
+    if r.get("amount"): parts.append("💳 Сумма: <b>"+html.escape(r["amount"])+"</b>")
+    if r.get("purpose"): parts.append("🧾 Назначение: "+html.escape(r["purpose"]))
+    if r.get("date"): parts.append("📅 "+html.escape(r["date"]))
+    if r.get("description"): parts.append("\n"+html.escape(r["description"]))
+    if index is not None: parts.append(f"\n📄 Отчёт {index+1} из {len(reports_data)}")
+    return "\n".join(parts)
+
+def show_report(chat_id,index=0):
+    if not reports_data:
+        bot.send_message(chat_id,"📊 <b>Отчёты проекта</b>\n\nПока опубликованных отчётов нет. Здесь будут подтверждения расходов, размещений и фотографии проекта ❤️",parse_mode="HTML")
+        return
+    index=max(0,min(index,len(reports_data)-1))
+    r=reports_data[index]
+    kb=types.InlineKeyboardMarkup()
+    nav=[]
+    if index>0: nav.append(types.InlineKeyboardButton("◀️ Назад",callback_data=f"report_{index-1}"))
+    if index<len(reports_data)-1: nav.append(types.InlineKeyboardButton("Вперёд ▶️",callback_data=f"report_{index+1}"))
+    if nav: kb.row(*nav)
+    caption=report_caption(r,index)
+    if r.get("photo_id"):
+        bot.send_photo(chat_id,r["photo_id"],caption=caption,parse_mode="HTML",reply_markup=kb)
+    else:
+        bot.send_message(chat_id,caption,parse_mode="HTML",reply_markup=kb)
+
 @bot.message_handler(func=lambda m: m.text == "📊 Отчёты")
 def reports(message):
-    bot.send_message(message.chat.id, f"📊 <b>Отчёты проекта</b>\n\n📸 Опубликовано баннеров в боте: <b>{len(banners_data)}</b>\n\nЗдесь мы будем публиковать подтверждения размещений, расходы на печать, аренду и монтаж, а также фотографии.\n\n❤️ Прозрачность — важная часть проекта.", parse_mode="HTML")
+    remember_user(message)
+    show_report(message.chat.id,0)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("report_"))
+def report_nav(c):
+    bot.answer_callback_query(c.id)
+    try: show_report(c.message.chat.id,int(c.data.split("_",1)[1]))
+    except Exception: pass
 
 # 8. Голосование
 def vote_keyboard():
@@ -267,6 +344,11 @@ def vote_callbacks(c):
         bot.answer_callback_query(c.id,"Ошибка варианта."); return
     vote_data.setdefault("votes",{})[str(c.from_user.id)]=idx
     save_vote()
+    total=len(vote_data.get("votes",{}))
+    log_event("Голосование",f"Получен голос за вариант: {vote_data.get('options',[])[idx]}")
+    if total in NOTIFY_MILESTONES:
+        try: bot.send_message(ADMIN_ID,f"🗳 <b>Голосование: {total} голосов!</b>\n\n"+vote_results_text(),parse_mode="HTML")
+        except Exception: pass
     bot.answer_callback_query(c.id,"❤️ Ваш голос учтён!",show_alert=False)
 
 @bot.callback_query_handler(func=lambda c: c.data == "open_vote")
@@ -364,6 +446,9 @@ def admin_menu():
         types.InlineKeyboardButton("💬 Добро дня", callback_data="admin_daily"),
         types.InlineKeyboardButton("📸 Баннеры", callback_data="admin_banners"),
         types.InlineKeyboardButton("✍️ Фразы", callback_data="admin_phrases"),
+        types.InlineKeyboardButton("📊 Отчёты", callback_data="admin_reports"),
+        types.InlineKeyboardButton("💾 Резервная копия", callback_data="admin_backup"),
+        types.InlineKeyboardButton("📋 Журнал событий", callback_data="admin_events"),
         types.InlineKeyboardButton("⚙️ Настройки", callback_data="admin_settings"),
         types.InlineKeyboardButton("❌ Закрыть", callback_data="admin_close"),
     )
@@ -386,7 +471,7 @@ def admin_actions(c):
     bot.answer_callback_query(c.id)
 
     if c.data == "admin_stats":
-        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n👥 Пользователей: <b>{len(users_data)}</b>\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>\n✍️ Предложенных фраз: <b>{len(phrases_data)}</b>\n📸 Баннеров: <b>{len(banners_data)}</b>", parse_mode="HTML", reply_markup=admin_menu())
+        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n👥 Пользователей: <b>{len(users_data)}</b>\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>\n✍️ Предложенных фраз: <b>{len(phrases_data)}</b>\n📸 Баннеров: <b>{len(banners_data)}</b>\n📊 Отчётов: <b>{len(reports_data)}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
     elif c.data == "admin_broadcast":
         admin_waiting_broadcast.add(c.message.chat.id)
@@ -420,12 +505,140 @@ def admin_actions(c):
     elif c.data == "admin_phrases":
         show_phrase_admin(c.message.chat.id, 0)
 
+    elif c.data == "admin_reports":
+        kb=types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("➕ Добавить отчёт",callback_data="report_admin_new"))
+        kb.add(types.InlineKeyboardButton("👁 Посмотреть отчёты",callback_data="report_admin_view"))
+        bot.send_message(c.message.chat.id,f"📊 <b>Управление отчётами</b>\n\nОпубликовано: <b>{len(reports_data)}</b>",parse_mode="HTML",reply_markup=kb)
+
+    elif c.data == "admin_events":
+        show_event_log(c.message.chat.id,0)
+
+    elif c.data == "admin_backup":
+        backup_name=f"odno_dobroe_slovo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        backup_files=[SUBS_FILE,BANNERS_FILE,USERS_FILE,PHRASES_FILE,VOTE_FILE,REPORTS_FILE,EVENTS_FILE]
+        # Save current in-memory data first.
+        save_subscribers()
+        save_banners()
+        save_json_list(USERS_FILE,users_data)
+        save_json_list(PHRASES_FILE,phrases_data)
+        save_vote()
+        save_json_list(REPORTS_FILE,reports_data)
+        save_json_list(EVENTS_FILE,events_data)
+        try:
+            with zipfile.ZipFile(backup_name,"w",zipfile.ZIP_DEFLATED) as z:
+                added=0
+                for filename in backup_files:
+                    if os.path.exists(filename):
+                        z.write(filename,arcname=os.path.basename(filename))
+                        added+=1
+                info={
+                    "project":"Одно доброе слово",
+                    "created":datetime.now().isoformat(timespec="seconds"),
+                    "files":added,
+                    "users":len(users_data),
+                    "subscribers":len(subscribers),
+                    "banners":len(banners_data),
+                    "phrases":len(phrases_data),
+                    "reports":len(reports_data)
+                }
+                z.writestr("backup_info.json",json.dumps(info,ensure_ascii=False,indent=2))
+            with open(backup_name,"rb") as f:
+                bot.send_document(c.message.chat.id,f,caption="💾 <b>Резервная копия проекта готова.</b>\n\nСохраните этот ZIP-файл в надёжном месте. Он содержит данные бота на момент создания копии.",parse_mode="HTML")
+            try: os.remove(backup_name)
+            except Exception: pass
+        except Exception as e:
+            bot.send_message(c.message.chat.id,"❌ Не удалось создать резервную копию. Попробуйте ещё раз.",reply_markup=admin_menu())
+
     elif c.data == "admin_settings":
         bot.send_message(c.message.chat.id, f"⚙️ <b>Настройки</b>\n\n🌐 Сайт: {SITE_URL}\n❤️ Пожертвования: {DONATE_URL}\n🌅 Добро дня: около 09:00 по Москве", parse_mode="HTML", reply_markup=admin_menu())
 
     elif c.data == "admin_close":
         bot.edit_message_text("🔒 Админ-панель закрыта.", c.message.chat.id, c.message.message_id)
 
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("events_"))
+def events_callbacks(c):
+    if c.from_user.id!=ADMIN_ID:
+        bot.answer_callback_query(c.id,"Нет доступа",show_alert=True); return
+    bot.answer_callback_query(c.id)
+    if c.data=="events_clear":
+        events_data.clear()
+        save_json_list(EVENTS_FILE,events_data)
+        bot.send_message(c.message.chat.id,"🗑 Журнал событий очищен.",reply_markup=admin_menu())
+    else:
+        try: show_event_log(c.message.chat.id,int(c.data.split("_",1)[1]))
+        except Exception: pass
+
+@bot.callback_query_handler(func=lambda c:c.data in ("report_admin_new","report_admin_view","report_publish","report_cancel"))
+def report_admin_callbacks(c):
+    if c.from_user.id!=ADMIN_ID:
+        bot.answer_callback_query(c.id,"Нет доступа",show_alert=True); return
+    bot.answer_callback_query(c.id)
+    if c.data=="report_admin_view":
+        show_report(c.message.chat.id,0)
+    elif c.data=="report_admin_new":
+        admin_report_state[c.message.chat.id]={"step":"title"}
+        bot.send_message(c.message.chat.id,"📊 <b>Новый отчёт</b>\n\n1/6 Напишите название.\nНапример: «Печать первого баннера»\n\nОтмена: /cancelreport",parse_mode="HTML")
+    elif c.data=="report_cancel":
+        admin_report_state.pop(c.message.chat.id,None)
+        bot.send_message(c.message.chat.id,"❌ Добавление отчёта отменено.",reply_markup=admin_menu())
+    elif c.data=="report_publish":
+        d=admin_report_state.pop(c.message.chat.id,None)
+        if d:
+            reports_data.append({k:d.get(k,"") for k in ("title","amount","purpose","date","description","photo_id")})
+            save_json_list(REPORTS_FILE,reports_data)
+            log_event("Новый отчёт",f"Опубликован отчёт: {d.get('title','')}",notify=True)
+            bot.send_message(c.message.chat.id,"✅ <b>Отчёт опубликован.</b>\n\nТеперь пользователи увидят его в разделе «📊 Отчёты».",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(commands=["cancelreport"])
+def cancel_report(m):
+    if m.from_user.id==ADMIN_ID:
+        admin_report_state.pop(m.chat.id,None)
+        bot.send_message(m.chat.id,"❌ Добавление отчёта отменено.",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m:m.from_user.id==ADMIN_ID and m.chat.id in admin_report_state,content_types=["text","photo"])
+def report_wizard(m):
+    d=admin_report_state[m.chat.id]
+    step=d.get("step")
+    if step=="title":
+        if not m.text: bot.send_message(m.chat.id,"Отправьте название текстом."); return
+        d["title"]=m.text.strip(); d["step"]="amount"
+        bot.send_message(m.chat.id,"2/6 💳 Укажите сумму.\nНапример: 8 500 ₽\nЕсли суммы нет — отправьте «0».")
+    elif step=="amount":
+        if not m.text: return
+        d["amount"]=m.text.strip(); d["step"]="purpose"
+        bot.send_message(m.chat.id,"3/6 🧾 Напишите назначение расхода/операции.\nНапример: печать и монтаж.")
+    elif step=="purpose":
+        if not m.text: return
+        d["purpose"]=m.text.strip(); d["step"]="date"
+        bot.send_message(m.chat.id,"4/6 📅 Укажите дату.\nНапример: 10 октября 2026.")
+    elif step=="date":
+        if not m.text: return
+        d["date"]=m.text.strip(); d["step"]="description"
+        bot.send_message(m.chat.id,"5/6 📝 Добавьте короткое описание.")
+    elif step=="description":
+        if not m.text: return
+        d["description"]=m.text.strip(); d["step"]="photo"
+        bot.send_message(m.chat.id,"6/6 📸 Отправьте фото чека, подтверждения или размещённого баннера.\n\nЕсли фото не нужно — отправьте /skipphoto")
+    elif step=="photo":
+        if not m.photo:
+            bot.send_message(m.chat.id,"Отправьте фотографию или /skipphoto."); return
+        d["photo_id"]=m.photo[-1].file_id
+        d["step"]="confirm"
+        kb=types.InlineKeyboardMarkup()
+        kb.row(types.InlineKeyboardButton("✅ Опубликовать",callback_data="report_publish"),types.InlineKeyboardButton("❌ Отмена",callback_data="report_cancel"))
+        bot.send_photo(m.chat.id,d["photo_id"],caption="👁 <b>Предпросмотр</b>\n\n"+report_caption(d),parse_mode="HTML",reply_markup=kb)
+
+@bot.message_handler(commands=["skipphoto"])
+def report_skip_photo(m):
+    d=admin_report_state.get(m.chat.id)
+    if m.from_user.id!=ADMIN_ID or not d or d.get("step")!="photo": return
+    d["photo_id"]=""
+    d["step"]="confirm"
+    kb=types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("✅ Опубликовать",callback_data="report_publish"),types.InlineKeyboardButton("❌ Отмена",callback_data="report_cancel"))
+    bot.send_message(m.chat.id,"👁 <b>Предпросмотр</b>\n\n"+report_caption(d),parse_mode="HTML",reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c:c.data.startswith("vote_admin_"))
 def vote_admin_callback(c):
@@ -531,6 +744,7 @@ def banner_admin_callbacks(c):
         if data and all(k in data for k in ("file_id","city","date","phrase")):
             banners_data.append({k:data[k] for k in ("file_id","city","date","phrase")})
             save_banners()
+            log_event("Новый баннер",f"Опубликован баннер: {data.get('phrase','')}",notify=True)
             bot.send_message(c.message.chat.id,"✅ <b>Баннер опубликован!</b>\n\nТеперь он доступен в разделе «📸 Наши баннеры».",parse_mode="HTML",reply_markup=admin_menu())
 
 
