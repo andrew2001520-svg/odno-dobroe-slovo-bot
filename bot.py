@@ -13,16 +13,13 @@ def keyboard():
     kb.row("📊 Отчёты", "🌐 Наш сайт")
     return kb
 
-@bot.message_handler(commands=["start"])
-def start(message):
+@@bot.message_handler(commands=["myid"])
+def my_id(message):
     bot.send_message(
         message.chat.id,
-        "❤️ <b>Одно доброе слово</b>\n\n"
-        "А что, если одна фраза сможет изменить чей-то день?\n\n"
-        "Мы размещаем на улицах баннеры с добрыми словами о надежде, "
-        "любви, семье и ценности жизни.\n\n"
-        "Выберите раздел 👇",
-        parse_mode="HTML",
+        f"Ваш Telegram ID: <code>{message.from_user.id}</code>",
+        parse_mode="HTML"
+    )
         reply_markup=keyboard(),
     )
 
