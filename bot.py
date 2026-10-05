@@ -238,10 +238,56 @@ def receive_phrase(message):
 # 4. Поделиться добром
 @bot.callback_query_handler(func=lambda c: c.data == "share_quote")
 def share_quote(c):
-    text = "Одно доброе слово ❤️\n\n" + random.choice(QUOTES)
-    url = "https://t.me/share/url?url=" + quote(SITE_URL) + "&text=" + quote(text)
-    kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("📤 Выбрать, кому отправить", url=url))
-    bot.answer_callback_query(c.id); bot.send_message(c.message.chat.id, "Поделитесь добрым словом с близким ❤️", reply_markup=kb)
+    bot.answer_callback_query(c.id)
+    send_kind_share_menu(c.message.chat.id)
+
+def send_kind_share_menu(chat_id):
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    choices=[
+        ("❤️ Ты справишься.","kindshare_0"),
+        ("🌿 Не сдавайся.","kindshare_1"),
+        ("✨ Ты важен.","kindshare_2"),
+        ("☀️ Всё ещё впереди.","kindshare_3"),
+        ("❤️ Цени тех, кто рядом.","kindshare_4"),
+        ("🎲 Случайная фраза","kindshare_random")
+    ]
+    for title,data in choices:
+        kb.add(types.InlineKeyboardButton(title,callback_data=data))
+    bot.send_message(chat_id,"🎁 <b>Поделиться добром</b>\n\nВыберите фразу, которую хотите отправить близкому человеку ❤️",parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("kindshare_"))
+def kind_share_callback(c):
+    bot.answer_callback_query(c.id)
+    fixed=[
+        "❤️ Ты справишься.",
+        "🌿 Не сдавайся. Иногда до перемен остаётся совсем немного.",
+        "✨ Ты важен. Даже если сегодня тебе кажется иначе.",
+        "☀️ Всё ещё впереди. Хорошие дни обязательно придут.",
+        "❤️ Цени тех, кто рядом. Иногда простые слова значат очень много."
+    ]
+    if c.data=="kindshare_random":
+        phrase=random.choice(QUOTES)
+    else:
+        try: phrase=fixed[int(c.data.rsplit("_",1)[1])]
+        except Exception: phrase=random.choice(QUOTES)
+    share_text=f"{phrase}\n\nПусть это доброе слово сегодня будет для тебя ❤️\n\n«Одно доброе слово»"
+    url="https://t.me/share/url?url="+quote("https://t.me/odno_dobroe_slovo_bot")+"&text="+quote(share_text)
+    kb=types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📤 Отправить близкому",url=url))
+    kb.add(types.InlineKeyboardButton("🔄 Выбрать другую фразу",callback_data="kindshare_again"))
+    bot.send_message(c.message.chat.id,f"🎁 <b>Добрая карточка</b>\n\n<b>{html.escape(phrase)}</b>\n\nПусть это доброе слово сегодня будет для тебя ❤️",parse_mode="HTML",reply_markup=kb)
+    log_event("Поделиться добром","Пользователь подготовил добрую фразу для отправки.")
+
+@bot.callback_query_handler(func=lambda c:c.data=="kindshare_again")
+def kind_share_again(c):
+    bot.answer_callback_query(c.id)
+    send_kind_share_menu(c.message.chat.id)
+
+
+@bot.message_handler(func=lambda m:m.text=="🎁 Поделиться добром")
+def share_kindness_menu(message):
+    remember_user(message)
+    send_kind_share_menu(message.chat.id)
 
 # 5. Наши баннеры
 @bot.message_handler(func=lambda m: m.text == "📸 Наши баннеры")
