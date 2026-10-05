@@ -13,6 +13,7 @@ SUBS_FILE = "daily_subscribers.json"
 BANNERS_FILE = "banners.json"
 USERS_FILE = "users.json"
 PHRASES_FILE = "suggested_phrases.json"
+VOTE_FILE = "vote.json"
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -92,6 +93,30 @@ def save_json_list(path, data):
 
 users_data=load_json_list(USERS_FILE)
 phrases_data=load_json_list(PHRASES_FILE)
+
+def load_vote():
+    try:
+        with open(VOTE_FILE,"r",encoding="utf-8") as f:
+            d=json.load(f)
+            if isinstance(d,dict): return d
+    except Exception:
+        pass
+    return {
+        "active": True,
+        "question": "Какую фразу вы хотели бы увидеть на улице?",
+        "options": ["❤️ Ты справишься","🌿 Не сдавайся","☀️ Всё ещё впереди","❤️ Цени тех, кто рядом","✨ Ты важен"],
+        "votes": {}
+    }
+
+def save_vote():
+    try:
+        with open(VOTE_FILE,"w",encoding="utf-8") as f:
+            json.dump(vote_data,f,ensure_ascii=False,indent=2)
+    except Exception:
+        pass
+
+vote_data=load_vote()
+admin_vote_setup={}
 
 def remember_user(message):
     if not message.from_user:
@@ -189,17 +214,65 @@ def next_banner(message):
 # 7. Отчёты
 @bot.message_handler(func=lambda m: m.text == "📊 Отчёты")
 def reports(message):
-    bot.send_message(message.chat.id, "📊 <b>Отчёты проекта</b>\n\nЗдесь будут публиковаться поступления, расходы на печать, аренду и монтаж, чеки и фотографии размещённых баннеров.\n\n❤️ Мы за прозрачность проекта.", parse_mode="HTML")
+    bot.send_message(message.chat.id, f"📊 <b>Отчёты проекта</b>\n\n📸 Опубликовано баннеров в боте: <b>{len(banners_data)}</b>\n\nЗдесь мы будем публиковать подтверждения размещений, расходы на печать, аренду и монтаж, а также фотографии.\n\n❤️ Прозрачность — важная часть проекта.", parse_mode="HTML")
 
 # 8. Голосование
+def vote_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    for i,opt in enumerate(vote_data.get("options",[])):
+        kb.add(types.InlineKeyboardButton(opt,callback_data=f"vote_{i}"))
+    kb.add(types.InlineKeyboardButton("📊 Результаты",callback_data="vote_results"))
+    return kb
+
+def vote_results_text():
+    options=vote_data.get("options",[])
+    votes=vote_data.get("votes",{})
+    counts=[0]*len(options)
+    for idx in votes.values():
+        try:
+            idx=int(idx)
+            if 0<=idx<len(counts): counts[idx]+=1
+        except Exception: pass
+    total=sum(counts)
+    lines=["📊 <b>Результаты голосования</b>",""]
+    for i,opt in enumerate(options):
+        pct=round(counts[i]*100/total) if total else 0
+        lines.append(f"{html.escape(opt)} — <b>{counts[i]}</b> ({pct}%)")
+    lines.append(f"\nВсего голосов: <b>{total}</b>")
+    return "\n".join(lines)
+
 def send_vote(chat_id):
-    bot.send_poll(chat_id, "Какую фразу вы хотели бы увидеть на улице?", ["❤️ Ты справишься", "🌿 Не сдавайся", "☀️ Всё ещё впереди", "❤️ Цени тех, кто рядом", "✨ Ты важен"], is_anonymous=True, allows_multiple_answers=False)
+    if not vote_data.get("active",False):
+        bot.send_message(chat_id,"🗳 Сейчас активного голосования нет. Следующее появится совсем скоро ❤️")
+        return
+    bot.send_message(chat_id,"🗳 <b>"+html.escape(vote_data.get("question","Выберите фразу"))+"</b>\n\nОдин человек — один голос. Свой выбор можно изменить до завершения голосования.",parse_mode="HTML",reply_markup=vote_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "🗳 Выбрать фразу")
-def vote_phrase(message): send_vote(message.chat.id)
+def vote_phrase(message):
+    remember_user(message)
+    send_vote(message.chat.id)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("vote_"))
+def vote_callbacks(c):
+    if c.data=="vote_results":
+        bot.answer_callback_query(c.id)
+        bot.send_message(c.message.chat.id,vote_results_text(),parse_mode="HTML")
+        return
+    if not vote_data.get("active",False):
+        bot.answer_callback_query(c.id,"Голосование уже завершено.",show_alert=True); return
+    try:
+        idx=int(c.data.split("_",1)[1])
+        if idx<0 or idx>=len(vote_data.get("options",[])): raise ValueError
+    except Exception:
+        bot.answer_callback_query(c.id,"Ошибка варианта."); return
+    vote_data.setdefault("votes",{})[str(c.from_user.id)]=idx
+    save_vote()
+    bot.answer_callback_query(c.id,"❤️ Ваш голос учтён!",show_alert=False)
 
 @bot.callback_query_handler(func=lambda c: c.data == "open_vote")
-def open_vote(c): bot.answer_callback_query(c.id); send_vote(c.message.chat.id)
+def open_vote(c):
+    bot.answer_callback_query(c.id)
+    send_vote(c.message.chat.id)
 
 @bot.message_handler(func=lambda m: m.text == "❤️ Поддержать проект")
 def donate(message):
@@ -320,7 +393,12 @@ def admin_actions(c):
         bot.send_message(c.message.chat.id, "📢 Отправьте следующим сообщением текст рассылки подписчикам «Добра дня».\n\nОтмена: /cancelbroadcast")
 
     elif c.data == "admin_vote":
-        send_vote(c.message.chat.id)
+        kb=types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("➕ Новое голосование",callback_data="vote_admin_new"))
+        kb.add(types.InlineKeyboardButton("📊 Результаты",callback_data="vote_admin_results"))
+        if vote_data.get("active"):
+            kb.add(types.InlineKeyboardButton("🏆 Завершить",callback_data="vote_admin_finish"))
+        bot.send_message(c.message.chat.id,"🗳 <b>Управление голосованием</b>\n\n"+("🟢 Сейчас голосование активно." if vote_data.get("active") else "⚪ Активного голосования нет."),parse_mode="HTML",reply_markup=kb)
 
     elif c.data == "admin_daily":
         phrase = random.choice(QUOTES)
@@ -348,6 +426,56 @@ def admin_actions(c):
     elif c.data == "admin_close":
         bot.edit_message_text("🔒 Админ-панель закрыта.", c.message.chat.id, c.message.message_id)
 
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("vote_admin_"))
+def vote_admin_callback(c):
+    if c.from_user.id!=ADMIN_ID:
+        bot.answer_callback_query(c.id,"Нет доступа",show_alert=True); return
+    bot.answer_callback_query(c.id)
+    if c.data=="vote_admin_results":
+        bot.send_message(c.message.chat.id,vote_results_text(),parse_mode="HTML")
+    elif c.data=="vote_admin_finish":
+        vote_data["active"]=False
+        save_vote()
+        options=vote_data.get("options",[])
+        counts=[0]*len(options)
+        for v in vote_data.get("votes",{}).values():
+            try:
+                v=int(v)
+                if 0<=v<len(counts): counts[v]+=1
+            except Exception: pass
+        if options:
+            winner=options[counts.index(max(counts))]
+            bot.send_message(c.message.chat.id,f"🏆 <b>Голосование завершено</b>\n\nПобедила фраза:\n<b>{html.escape(winner)}</b>\n\n"+vote_results_text(),parse_mode="HTML",reply_markup=admin_menu())
+        else:
+            bot.send_message(c.message.chat.id,"Голосование завершено.",reply_markup=admin_menu())
+    elif c.data=="vote_admin_new":
+        admin_vote_setup[c.message.chat.id]={"step":"question"}
+        bot.send_message(c.message.chat.id,"🗳 <b>Новое голосование</b>\n\n1/2 Напишите вопрос голосования.\n\nОтмена: /cancelvote",parse_mode="HTML")
+
+@bot.message_handler(commands=["cancelvote"])
+def cancel_vote_setup(m):
+    if m.from_user.id==ADMIN_ID:
+        admin_vote_setup.pop(m.chat.id,None)
+        bot.send_message(m.chat.id,"❌ Создание голосования отменено.",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m:m.from_user.id==ADMIN_ID and m.chat.id in admin_vote_setup,content_types=["text"])
+def vote_setup_message(m):
+    st=admin_vote_setup[m.chat.id]
+    if st.get("step")=="question":
+        if m.text.startswith("/"): return
+        st["question"]=m.text.strip()
+        st["step"]="options"
+        bot.send_message(m.chat.id,"2/2 Отправьте варианты <b>каждый с новой строки</b>.\n\nНапример:\nТы справишься\nНе сдавайся\nТы важен",parse_mode="HTML")
+    elif st.get("step")=="options":
+        opts=[x.strip() for x in (m.text or "").splitlines() if x.strip()]
+        if not 2<=len(opts)<=10:
+            bot.send_message(m.chat.id,"Нужно от 2 до 10 вариантов. Отправьте их ещё раз, каждый с новой строки."); return
+        vote_data.clear()
+        vote_data.update({"active":True,"question":st["question"],"options":opts,"votes":{}})
+        save_vote()
+        admin_vote_setup.pop(m.chat.id,None)
+        bot.send_message(m.chat.id,"✅ <b>Новое голосование запущено!</b>\n\nПользователи увидят его через «🗳 Выбрать фразу».",parse_mode="HTML",reply_markup=admin_menu())
 
 def show_phrase_admin(chat_id,index=0):
     if not phrases_data:
