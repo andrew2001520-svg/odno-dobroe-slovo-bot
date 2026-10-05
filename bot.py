@@ -184,6 +184,99 @@ def daily_worker():
             last_date = now.date()
         time.sleep(60)
 
+# 🔐 Админ-панель
+admin_waiting_broadcast = set()
+
+
+def admin_menu():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
+        types.InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast"),
+        types.InlineKeyboardButton("🗳 Голосование", callback_data="admin_vote"),
+        types.InlineKeyboardButton("💬 Добро дня", callback_data="admin_daily"),
+        types.InlineKeyboardButton("📸 Баннеры", callback_data="admin_banners"),
+        types.InlineKeyboardButton("✍️ Фразы", callback_data="admin_phrases"),
+        types.InlineKeyboardButton("⚙️ Настройки", callback_data="admin_settings"),
+        types.InlineKeyboardButton("❌ Закрыть", callback_data="admin_close"),
+    )
+    return kb
+
+
+@bot.message_handler(commands=["admin"])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    bot.send_message(message.chat.id, "🔐 <b>Админ-панель</b>\n\nВыберите действие:", parse_mode="HTML", reply_markup=admin_menu())
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_"))
+def admin_actions(c):
+    if c.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(c.id, "Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(c.id)
+
+    if c.data == "admin_stats":
+        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>", parse_mode="HTML", reply_markup=admin_menu())
+
+    elif c.data == "admin_broadcast":
+        admin_waiting_broadcast.add(c.message.chat.id)
+        bot.send_message(c.message.chat.id, "📢 Отправьте следующим сообщением текст рассылки подписчикам «Добра дня».\n\nОтмена: /cancelbroadcast")
+
+    elif c.data == "admin_vote":
+        send_vote(c.message.chat.id)
+
+    elif c.data == "admin_daily":
+        phrase = random.choice(QUOTES)
+        sent = 0
+        for chat_id in list(subscribers):
+            try:
+                bot.send_message(chat_id, "🌅 <b>Добро дня</b>\n\n" + html.escape(phrase), parse_mode="HTML")
+                sent += 1
+            except Exception:
+                pass
+        bot.send_message(c.message.chat.id, f"✅ Добро дня отправлено. Получателей: <b>{sent}</b>", parse_mode="HTML", reply_markup=admin_menu())
+
+    elif c.data == "admin_banners":
+        bot.send_message(c.message.chat.id, "📸 <b>Баннеры</b>\n\nСейчас раздел «Наши баннеры» ведёт на сайт проекта. Следующим обновлением можно добавить загрузку фото прямо из админки.", parse_mode="HTML", reply_markup=admin_menu())
+
+    elif c.data == "admin_phrases":
+        bot.send_message(c.message.chat.id, "✍️ <b>Предложенные фразы</b>\n\nНовые предложения уже приходят вам личным сообщением. Для архива всех фраз потребуется постоянная база данных.", parse_mode="HTML", reply_markup=admin_menu())
+
+    elif c.data == "admin_settings":
+        bot.send_message(c.message.chat.id, f"⚙️ <b>Настройки</b>\n\n🌐 Сайт: {SITE_URL}\n❤️ Пожертвования: {DONATE_URL}\n🌅 Добро дня: около 09:00 по Москве", parse_mode="HTML", reply_markup=admin_menu())
+
+    elif c.data == "admin_close":
+        bot.edit_message_text("🔒 Админ-панель закрыта.", c.message.chat.id, c.message.message_id)
+
+
+@bot.message_handler(commands=["cancelbroadcast"])
+def cancel_broadcast(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    admin_waiting_broadcast.discard(message.chat.id)
+    bot.send_message(message.chat.id, "Рассылка отменена.", reply_markup=admin_menu())
+
+
+@bot.message_handler(func=lambda m: m.chat.id in admin_waiting_broadcast and m.from_user.id == ADMIN_ID, content_types=["text"])
+def admin_broadcast(message):
+    admin_waiting_broadcast.discard(message.chat.id)
+    if message.text.startswith("/"):
+        bot.send_message(message.chat.id, "Рассылка отменена.", reply_markup=admin_menu())
+        return
+    sent = 0
+    failed = 0
+    for chat_id in list(subscribers):
+        try:
+            bot.send_message(chat_id, "📢 <b>Новости проекта «Одно доброе слово»</b>\n\n" + html.escape(message.text), parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+    bot.send_message(message.chat.id, f"✅ <b>Рассылка завершена</b>\n\nДоставлено: <b>{sent}</b>\nНе доставлено: <b>{failed}</b>", parse_mode="HTML", reply_markup=admin_menu())
+
+
 @bot.message_handler(func=lambda m: True)
 def fallback(message): start(message)
 
