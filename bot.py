@@ -46,17 +46,22 @@ def good_word(message):
 
 @bot.message_handler(func=lambda m: m.text == "❤️ Поддержать проект")
 def donate(message):
+    donate_kb = types.InlineKeyboardMarkup()
+    donate_kb.add(
+        types.InlineKeyboardButton(
+            "❤️ Пожертвовать",
+            url="https://pro.selfwork.ru/to/02197162",
+        )
+    )
     bot.send_message(
         message.chat.id,
         "❤️ <b>Поддержать проект</b>\n\n"
         "Ваш вклад помогает оплачивать печать, аренду рекламных конструкций, "
-        "монтаж и размещение баннеров.\n\n"
-        "<b>СБП:</b> +7 930 771-44-44\n"
-        "<b>Получатель:</b> АЛЁШИН Андрей Валерьевич\n"
-        "<b>Банк:</b> АО «Райффайзенбанк»\n\n"
-        "Перед переводом обязательно проверьте имя получателя.\n\n"
-        "Спасибо за поддержку ❤️",
+        "монтаж и размещение первых баннеров.\n\n"
+        "Сейчас собрано: <b>1 350 ₽ из 50 000 ₽</b>\n\n"
+        "Нажмите кнопку ниже, чтобы поддержать проект ❤️",
         parse_mode="HTML",
+        reply_markup=donate_kb,
     )
 
 @bot.message_handler(func=lambda m: m.text == "🌿 О проекте")
