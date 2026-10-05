@@ -11,6 +11,8 @@ DONATE_URL = "https://pro.selfwork.ru/to/02197162"
 SITE_URL = "https://odnodobroeslovo.ru"
 SUBS_FILE = "daily_subscribers.json"
 BANNERS_FILE = "banners.json"
+USERS_FILE = "users.json"
+PHRASES_FILE = "suggested_phrases.json"
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -73,8 +75,45 @@ def save_subscribers():
 subscribers = load_subscribers()
 waiting_for_phrase = set()
 
+def load_json_list(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data=json.load(f)
+            return data if isinstance(data,list) else []
+    except Exception:
+        return []
+
+def save_json_list(path, data):
+    try:
+        with open(path,"w",encoding="utf-8") as f:
+            json.dump(data,f,ensure_ascii=False,indent=2)
+    except Exception:
+        pass
+
+users_data=load_json_list(USERS_FILE)
+phrases_data=load_json_list(PHRASES_FILE)
+
+def remember_user(message):
+    if not message.from_user:
+        return
+    uid=message.from_user.id
+    found=next((x for x in users_data if x.get("id")==uid),None)
+    record={
+        "id":uid,
+        "chat_id":message.chat.id,
+        "first_name":message.from_user.first_name or "",
+        "username":message.from_user.username or "",
+        "last_seen":datetime.utcnow().isoformat(timespec="seconds")
+    }
+    if found:
+        found.update(record)
+    else:
+        users_data.append(record)
+    save_json_list(USERS_FILE,users_data)
+
 @bot.message_handler(commands=["start"])
 def start(message):
+    remember_user(message)
     bot.send_message(message.chat.id, "❤️ <b>Одно доброе слово</b>\n\nА что, если одна фраза сможет изменить чей-то день?\n\nМы размещаем на улицах баннеры с добрыми словами о надежде, любви, семье и ценности жизни.\n\nВыберите раздел 👇", parse_mode="HTML", reply_markup=keyboard())
 
 @bot.message_handler(commands=["myid"])
@@ -123,6 +162,8 @@ def receive_phrase(message):
     if not phrase or len(phrase) > 500:
         bot.send_message(message.chat.id, "Фраза не принята. Максимум 500 символов.", reply_markup=keyboard()); return
     u = message.from_user; username = "@" + u.username if u.username else "не указан"
+    phrases_data.append({"text":phrase,"user_id":u.id,"username":u.username or "","name":u.first_name or "","status":"new","created":datetime.utcnow().isoformat(timespec="seconds")})
+    save_json_list(PHRASES_FILE,phrases_data)
     bot.send_message(ADMIN_ID, "💌 <b>Новая предложенная фраза</b>\n\n" + f"«{html.escape(phrase)}»\n\n👤 {html.escape(u.first_name or 'Пользователь')}\n🔗 {html.escape(username)}\n🆔 <code>{u.id}</code>", parse_mode="HTML")
     bot.send_message(message.chat.id, "❤️ <b>Спасибо!</b> Ваша фраза принята. Возможно, однажды именно она появится на улицах города.", parse_mode="HTML", reply_markup=keyboard())
 
@@ -272,7 +313,7 @@ def admin_actions(c):
     bot.answer_callback_query(c.id)
 
     if c.data == "admin_stats":
-        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>", parse_mode="HTML", reply_markup=admin_menu())
+        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n👥 Пользователей: <b>{len(users_data)}</b>\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>\n✍️ Предложенных фраз: <b>{len(phrases_data)}</b>\n📸 Баннеров: <b>{len(banners_data)}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
     elif c.data == "admin_broadcast":
         admin_waiting_broadcast.add(c.message.chat.id)
@@ -299,7 +340,7 @@ def admin_actions(c):
         bot.send_message(c.message.chat.id, f"📸 <b>Управление баннерами</b>\n\nОпубликовано: <b>{len(banners_data)}</b>", parse_mode="HTML", reply_markup=kb)
 
     elif c.data == "admin_phrases":
-        bot.send_message(c.message.chat.id, "✍️ <b>Предложенные фразы</b>\n\nНовые предложения уже приходят вам личным сообщением. Для архива всех фраз потребуется постоянная база данных.", parse_mode="HTML", reply_markup=admin_menu())
+        show_phrase_admin(c.message.chat.id, 0)
 
     elif c.data == "admin_settings":
         bot.send_message(c.message.chat.id, f"⚙️ <b>Настройки</b>\n\n🌐 Сайт: {SITE_URL}\n❤️ Пожертвования: {DONATE_URL}\n🌅 Добро дня: около 09:00 по Москве", parse_mode="HTML", reply_markup=admin_menu())
@@ -307,6 +348,42 @@ def admin_actions(c):
     elif c.data == "admin_close":
         bot.edit_message_text("🔒 Админ-панель закрыта.", c.message.chat.id, c.message.message_id)
 
+
+def show_phrase_admin(chat_id,index=0):
+    if not phrases_data:
+        bot.send_message(chat_id,"✍️ Пока предложенных фраз нет.",reply_markup=admin_menu())
+        return
+    index=max(0,min(index,len(phrases_data)-1))
+    p=phrases_data[index]
+    status={"new":"🆕 Новая","approved":"✅ Одобрена","rejected":"❌ Отклонена"}.get(p.get("status"),p.get("status",""))
+    text=(f"✍️ <b>Предложенная фраза</b>\n\n"
+          f"«{html.escape(p.get('text',''))}»\n\n"
+          f"👤 {html.escape(p.get('name') or 'Пользователь')}\n"
+          f"📌 Статус: {status}\n"
+          f"📄 {index+1} из {len(phrases_data)}")
+    kb=types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("✅ Одобрить",callback_data=f"phrase_ok_{index}"),
+           types.InlineKeyboardButton("❌ Отклонить",callback_data=f"phrase_no_{index}"))
+    nav=[]
+    if index>0: nav.append(types.InlineKeyboardButton("◀️",callback_data=f"phrase_view_{index-1}"))
+    if index<len(phrases_data)-1: nav.append(types.InlineKeyboardButton("▶️",callback_data=f"phrase_view_{index+1}"))
+    if nav: kb.row(*nav)
+    bot.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith(("phrase_ok_","phrase_no_","phrase_view_")))
+def phrase_admin_callback(c):
+    if c.from_user.id!=ADMIN_ID:
+        bot.answer_callback_query(c.id,"Нет доступа",show_alert=True); return
+    bot.answer_callback_query(c.id)
+    try:
+        idx=int(c.data.rsplit("_",1)[1])
+        if c.data.startswith("phrase_ok_"):
+            phrases_data[idx]["status"]="approved"; save_json_list(PHRASES_FILE,phrases_data)
+        elif c.data.startswith("phrase_no_"):
+            phrases_data[idx]["status"]="rejected"; save_json_list(PHRASES_FILE,phrases_data)
+        show_phrase_admin(c.message.chat.id,idx)
+    except Exception:
+        bot.send_message(c.message.chat.id,"Не удалось открыть фразу.")
 
 @bot.callback_query_handler(func=lambda c:c.data in ("add_banner","view_banners","publish_banner","cancel_banner"))
 def banner_admin_callbacks(c):
@@ -383,7 +460,7 @@ def admin_broadcast(message):
         return
     sent = 0
     failed = 0
-    for chat_id in list(subscribers):
+    for chat_id in list({u.get("chat_id") for u in users_data if u.get("chat_id")}):
         try:
             bot.send_message(chat_id, "📢 <b>Новости проекта «Одно доброе слово»</b>\n\n" + html.escape(message.text), parse_mode="HTML")
             sent += 1
@@ -392,8 +469,19 @@ def admin_broadcast(message):
     bot.send_message(message.chat.id, f"✅ <b>Рассылка завершена</b>\n\nДоставлено: <b>{sent}</b>\nНе доставлено: <b>{failed}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
 
+@bot.message_handler(commands=["help"])
+def help_command(message):
+    remember_user(message)
+    bot.send_message(message.chat.id,
+        "❤️ <b>Помощь</b>\n\n"
+        "Используйте кнопки меню для добрых фраз, голосования, баннеров, отчётов и поддержки проекта.\n"
+        "Если вы хотите предложить свою фразу — нажмите «✍️ Предложить фразу».",
+        parse_mode="HTML",reply_markup=keyboard())
+
 @bot.message_handler(func=lambda m: True)
-def fallback(message): start(message)
+def fallback(message):
+    remember_user(message)
+    start(message)
 
 if __name__ == "__main__":
     threading.Thread(target=daily_worker, daemon=True).start()
