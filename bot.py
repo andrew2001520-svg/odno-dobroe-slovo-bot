@@ -10,6 +10,7 @@ ADMIN_ID = 5844296950
 DONATE_URL = "https://pro.selfwork.ru/to/02197162"
 SITE_URL = "https://odnodobroeslovo.ru"
 SUBS_FILE = "daily_subscribers.json"
+BANNERS_FILE = "banners.json"
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -136,8 +137,7 @@ def share_quote(c):
 # 5. Наши баннеры
 @bot.message_handler(func=lambda m: m.text == "📸 Наши баннеры")
 def banners(message):
-    kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("🌐 Смотреть проект", url=SITE_URL))
-    bot.send_message(message.chat.id, "📸 <b>Наши баннеры</b>\n\nЗдесь будут фотографии реально размещённых баннеров с городом, датой и фразой. Следите за обновлениями ❤️", parse_mode="HTML", reply_markup=kb)
+    show_banner(message.chat.id, 0)
 
 # 6. Следующий баннер
 @bot.message_handler(func=lambda m: m.text == "🎯 Следующий баннер")
@@ -186,6 +186,59 @@ def daily_worker():
 
 # 🔐 Админ-панель
 admin_waiting_broadcast = set()
+admin_banner_state = {}
+
+
+def load_banners():
+    try:
+        with open(BANNERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_banners():
+    try:
+        with open(BANNERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(banners_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+banners_data = load_banners()
+
+
+def show_banner(chat_id, index=0):
+    if not banners_data:
+        bot.send_message(chat_id, "📸 <b>Наши баннеры</b>\n\nПока опубликованных баннеров нет. Скоро здесь появятся первые работы ❤️", parse_mode="HTML")
+        return
+    index = max(0, min(index, len(banners_data)-1))
+    b = banners_data[index]
+    caption = (
+        f"📸 <b>{html.escape(b['phrase'])}</b>\n\n"
+        f"📍 {html.escape(b['city'])}\n"
+        f"📅 {html.escape(b['date'])}\n\n"
+        f"Баннер {index+1} из {len(banners_data)} ❤️"
+    )
+    kb=types.InlineKeyboardMarkup()
+    buttons=[]
+    if index>0:
+        buttons.append(types.InlineKeyboardButton("◀️ Назад", callback_data=f"banner_{index-1}"))
+    if index<len(banners_data)-1:
+        buttons.append(types.InlineKeyboardButton("Вперёд ▶️", callback_data=f"banner_{index+1}"))
+    if buttons:
+        kb.row(*buttons)
+    bot.send_photo(chat_id, b["file_id"], caption=caption, parse_mode="HTML", reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("banner_"))
+def banner_nav(c):
+    bot.answer_callback_query(c.id)
+    try:
+        idx=int(c.data.split("_",1)[1])
+        show_banner(c.message.chat.id, idx)
+    except Exception:
+        pass
 
 
 def admin_menu():
@@ -240,7 +293,10 @@ def admin_actions(c):
         bot.send_message(c.message.chat.id, f"✅ Добро дня отправлено. Получателей: <b>{sent}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
     elif c.data == "admin_banners":
-        bot.send_message(c.message.chat.id, "📸 <b>Баннеры</b>\n\nСейчас раздел «Наши баннеры» ведёт на сайт проекта. Следующим обновлением можно добавить загрузку фото прямо из админки.", parse_mode="HTML", reply_markup=admin_menu())
+        kb=types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("➕ Добавить баннер", callback_data="add_banner"))
+        kb.add(types.InlineKeyboardButton("👁 Посмотреть опубликованные", callback_data="view_banners"))
+        bot.send_message(c.message.chat.id, f"📸 <b>Управление баннерами</b>\n\nОпубликовано: <b>{len(banners_data)}</b>", parse_mode="HTML", reply_markup=kb)
 
     elif c.data == "admin_phrases":
         bot.send_message(c.message.chat.id, "✍️ <b>Предложенные фразы</b>\n\nНовые предложения уже приходят вам личным сообщением. Для архива всех фраз потребуется постоянная база данных.", parse_mode="HTML", reply_markup=admin_menu())
@@ -250,6 +306,65 @@ def admin_actions(c):
 
     elif c.data == "admin_close":
         bot.edit_message_text("🔒 Админ-панель закрыта.", c.message.chat.id, c.message.message_id)
+
+
+@bot.callback_query_handler(func=lambda c:c.data in ("add_banner","view_banners","publish_banner","cancel_banner"))
+def banner_admin_callbacks(c):
+    if c.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(c.id,"Нет доступа",show_alert=True); return
+    bot.answer_callback_query(c.id)
+    if c.data=="view_banners":
+        show_banner(c.message.chat.id,0)
+    elif c.data=="add_banner":
+        admin_banner_state[c.message.chat.id]={"step":"photo"}
+        bot.send_message(c.message.chat.id,"📸 <b>Новый баннер</b>\n\n1/4 Отправьте фотографию баннера.\n\nОтмена: /cancelbanner",parse_mode="HTML")
+    elif c.data=="cancel_banner":
+        admin_banner_state.pop(c.message.chat.id,None)
+        bot.send_message(c.message.chat.id,"❌ Публикация отменена.",reply_markup=admin_menu())
+    elif c.data=="publish_banner":
+        data=admin_banner_state.pop(c.message.chat.id,None)
+        if data and all(k in data for k in ("file_id","city","date","phrase")):
+            banners_data.append({k:data[k] for k in ("file_id","city","date","phrase")})
+            save_banners()
+            bot.send_message(c.message.chat.id,"✅ <b>Баннер опубликован!</b>\n\nТеперь он доступен в разделе «📸 Наши баннеры».",parse_mode="HTML",reply_markup=admin_menu())
+
+
+@bot.message_handler(commands=["cancelbanner"])
+def cancel_banner_command(m):
+    if m.from_user.id==ADMIN_ID:
+        admin_banner_state.pop(m.chat.id,None)
+        bot.send_message(m.chat.id,"❌ Добавление баннера отменено.",reply_markup=admin_menu())
+
+
+@bot.message_handler(func=lambda m:m.from_user.id==ADMIN_ID and m.chat.id in admin_banner_state,content_types=["photo","text"])
+def banner_wizard(m):
+    state=admin_banner_state[m.chat.id]
+    step=state.get("step")
+    if step=="photo":
+        if not m.photo:
+            bot.send_message(m.chat.id,"Сначала отправьте фотографию баннера 📸"); return
+        state["file_id"]=m.photo[-1].file_id
+        state["step"]="city"
+        bot.send_message(m.chat.id,"2/4 📍 Укажите город:")
+    elif step=="city":
+        state["city"]=(m.text or "").strip()
+        state["step"]="date"
+        bot.send_message(m.chat.id,"3/4 📅 Укажите дату размещения, например: 6 октября 2026:")
+    elif step=="date":
+        state["date"]=(m.text or "").strip()
+        state["step"]="phrase"
+        bot.send_message(m.chat.id,"4/4 💬 Напишите фразу, размещённую на баннере:")
+    elif step=="phrase":
+        state["phrase"]=(m.text or "").strip()
+        state["step"]="confirm"
+        caption=(f"📸 <b>Предпросмотр</b>\n\n"
+                 f"💬 {html.escape(state['phrase'])}\n"
+                 f"📍 {html.escape(state['city'])}\n"
+                 f"📅 {html.escape(state['date'])}")
+        kb=types.InlineKeyboardMarkup()
+        kb.row(types.InlineKeyboardButton("✅ Опубликовать",callback_data="publish_banner"),
+               types.InlineKeyboardButton("❌ Отмена",callback_data="cancel_banner"))
+        bot.send_photo(m.chat.id,state["file_id"],caption=caption,parse_mode="HTML",reply_markup=kb)
 
 
 @bot.message_handler(commands=["cancelbroadcast"])
