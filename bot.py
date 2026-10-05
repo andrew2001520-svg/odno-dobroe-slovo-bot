@@ -11,29 +11,19 @@ def keyboard():
     kb.row("❤️ Поддержать проект", "💬 Доброе слово")
     kb.row("🌿 О проекте", "📸 Наши баннеры")
     kb.row("📊 Отчёты", "🌐 Наш сайт")
-    kb.row("✍️ Предложить фразу")
     return kb
-
 
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
         "❤️ <b>Одно доброе слово</b>\n\n"
-        "Мы размещаем на улицах баннеры с добрыми словами о поддержке, "
+        "А что, если одна фраза сможет изменить чей-то день?\n\n"
+        "Мы размещаем на улицах баннеры с добрыми словами о надежде, "
         "любви, семье и ценности жизни.\n\n"
         "Выберите раздел 👇",
         parse_mode="HTML",
         reply_markup=keyboard(),
-    )
-
-
-@bot.message_handler(commands=["myid"])
-def my_id(message):
-    bot.send_message(
-        message.chat.id,
-        f"Ваш Telegram ID: <code>{message.from_user.id}</code>",
-        parse_mode="HTML",
     )
 
 @bot.message_handler(func=lambda m: m.text == "💬 Доброе слово")
@@ -191,8 +181,7 @@ def good_word(message):
     "🌱 Позволь себе двигаться дальше.",
     "✨ Хорошее обязательно случается.",
     "❤️ Один человек может изменить целый мир другого человека.",
-        
-    ]
+]
     bot.send_message(
         message.chat.id,
         f"<b>{random.choice(quotes)}</b>\n\nПусть эти слова сегодня будут именно для тебя. ❤️",
@@ -206,7 +195,7 @@ def donate(message):
         types.InlineKeyboardButton(
             "❤️ Пожертвовать",
             url="https://pro.selfwork.ru/to/02197162",
-            
+    )
     bot.send_message(
         message.chat.id,
         "❤️ <b>Поддержать проект</b>\n\n"
@@ -264,5 +253,4 @@ def fallback(message):
     start(message)
 
 if __name__ == "__main__":
-    
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
