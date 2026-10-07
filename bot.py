@@ -24,6 +24,9 @@ STEPS_FILE = "small_steps.json"
 LETTERS_FILE = "private_letters.json"
 CITIES_FILE = "kindness_cities.json"
 DAILY_MISSIONS_FILE = "daily_missions.json"
+NETWORK_FILE = "kindness_network.json"
+CITY_VOTE_FILE = "next_city_vote.json"
+PROJECT_GOAL_FILE = "project_goal.json"
 SUPPORT_EMAIL = "andrew2001520@icloud.com"
 SUPPORT_TELEGRAM_URL = "https://t.me/raskol4444"
 STAR_PACKS = [25, 50, 100, 250, 500]
@@ -61,7 +64,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-dobro-dnya-v2"
+BOT_VERSION = "2026.10.07-live-network-v1"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -69,6 +72,7 @@ def keyboard():
     kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
     kb.row("🌱 Мой маленький шаг", "🌙 Письмо в тишину")
     kb.row("🏡 Моё пространство", "🌍 Добро прямо сейчас")
+    kb.row("🌍 Живая сеть добра")
     kb.row("📍 Карта добра")
     kb.row("🌅 Добро дня", "💬 Доброе слово")
     kb.row("❤️ Одно доброе слово")
@@ -1180,6 +1184,7 @@ def kindness_save(m):
     data = kindness_records()
     data.append({
         "id": max([int(x.get("id", 0)) for x in data] or [0]) + 1,
+        "chain_id": max([int(x.get("id", 0)) for x in data] or [0]) + 1,
         "user_id": m.from_user.id,
         "text": text,
         "created": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -1224,6 +1229,7 @@ def kindness_receive(c):
         # Не раздуваем запись бесконечно.
         rec["delivered_to"] = rec["delivered_to"][-500:]
         save_kindness_records(data)
+        record_network_hop(rec, uid)
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("💌 Передать добро дальше", callback_data="kindness_write"))
     kb.add(types.InlineKeyboardButton("❤️ Получить ещё одно", callback_data="kindness_receive"))
@@ -1633,6 +1639,151 @@ def city_refresh(c):
         pass
 
 
+
+# 🌍 Живая сеть добра 1.0
+# Публично используются только агрегированные города и счётчики. Telegram ID нужны
+# внутри бота для защиты от повторных голосов/доставок и наружу через API не отдаются.
+def network_records():
+    return load_json_list(NETWORK_FILE)
+
+def save_network_records(data):
+    save_json_list(NETWORK_FILE, data[-10000:])
+
+def _city_for_user(uid):
+    for x in city_records():
+        if str(x.get("user_id")) == str(uid):
+            return x.get("city") or None
+    return None
+
+def record_network_hop(kindness_record, receiver_uid):
+    sender_city = _city_for_user(kindness_record.get("user_id"))
+    receiver_city = _city_for_user(receiver_uid)
+    data = network_records()
+    data.append({
+        "chain_id": int(kindness_record.get("chain_id") or kindness_record.get("id") or 0),
+        "from_city": sender_city,
+        "to_city": receiver_city,
+        "created": datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    })
+    save_network_records(data)
+
+def network_chains_public(limit=8):
+    grouped = {}
+    for x in network_records():
+        cid = str(x.get("chain_id") or "")
+        if not cid: continue
+        g = grouped.setdefault(cid, {"chain_id": cid, "hops": 0, "cities": [], "last": ""})
+        g["hops"] += 1
+        for c in (x.get("from_city"), x.get("to_city")):
+            if c and c not in g["cities"]: g["cities"].append(c)
+        g["last"] = max(g["last"], str(x.get("created") or ""))
+    rows = sorted(grouped.values(), key=lambda x: (x["hops"], x["last"]), reverse=True)
+    return [{"chain_id": x["chain_id"], "people": x["hops"] + 1,
+             "cities": x["cities"][:8], "city_count": len(x["cities"])} for x in rows[:limit]]
+
+def network_summary():
+    hops = network_records()
+    chains = network_chains_public(limit=10000)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return {
+        "chains": len({str(x.get("chain_id")) for x in hops if x.get("chain_id") is not None}),
+        "hops": len(hops),
+        "hops_today": sum(1 for x in hops if str(x.get("created", "")).startswith(today)),
+        "longest_chain": max([x.get("people", 0) for x in chains] or [0]),
+    }
+
+def load_city_vote():
+    try:
+        with open(CITY_VOTE_FILE, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return {"votes": {}}
+
+def save_city_vote(data):
+    try:
+        with open(CITY_VOTE_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception: pass
+
+def city_vote_results():
+    data = load_city_vote(); counts = {}
+    for city in data.get("votes", {}).values(): counts[city] = counts.get(city, 0) + 1
+    return [{"city": city, "votes": n} for city, n in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+
+def city_vote_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    cities = [x["city"] for x in city_aggregates()[:10]]
+    for i in range(0, len(cities), 2):
+        kb.row(*[types.InlineKeyboardButton("📍 " + c, callback_data="netvote_" + str(cities.index(c))) for c in cities[i:i+2]])
+    kb.add(types.InlineKeyboardButton("📊 Результаты", callback_data="netvote_results"))
+    return kb, cities
+
+def city_vote_text():
+    rows = city_vote_results()
+    if not rows: return "🗳 <b>Следующий город для баннера</b>\n\nПока голосов нет. Выберите город ниже ❤️"
+    return "🗳 <b>Следующий город для баннера</b>\n\n" + "\n".join(f"{i+1}. {html.escape(x['city'])} — <b>{x['votes']}</b>" for i,x in enumerate(rows[:10]))
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("netvote_"))
+def network_city_vote(c):
+    if c.data == "netvote_results":
+        bot.answer_callback_query(c.id); kb,_=city_vote_keyboard(); bot.send_message(c.message.chat.id, city_vote_text(), parse_mode="HTML", reply_markup=kb); return
+    kb,cities = city_vote_keyboard()
+    try: idx=int(c.data.split("_")[-1]); city=cities[idx]
+    except Exception: bot.answer_callback_query(c.id, "Город уже изменился — откройте голосование снова.", show_alert=True); return
+    data=load_city_vote(); data.setdefault("votes", {})[str(c.from_user.id)] = city; save_city_vote(data)
+    bot.answer_callback_query(c.id, "❤️ Голос за «"+city+"» учтён!")
+
+def project_goal():
+    try:
+        with open(PROJECT_GOAL_FILE, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return {"title":"Первый реальный баннер", "raised":0, "target":50000}
+
+def save_project_goal(data):
+    try:
+        with open(PROJECT_GOAL_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception: pass
+
+@bot.message_handler(commands=["setgoal"])
+def set_project_goal(m):
+    if m.from_user.id != ADMIN_ID: return
+    try:
+        parts=(m.text or "").split(); raised=max(0,int(parts[1])); target=max(1,int(parts[2])); title=" ".join(parts[3:]).strip() or "Следующий баннер"
+        save_project_goal({"title":title,"raised":raised,"target":target})
+        bot.send_message(m.chat.id, f"✅ Цель обновлена: {raised:,} / {target:,} ₽\n{html.escape(title)}", parse_mode="HTML")
+    except Exception:
+        bot.send_message(m.chat.id, "Формат: /setgoal 12500 50000 Первый баннер")
+
+def collective_achievements():
+    cities=len(city_aggregates()); words=len(kindness_records()); deliveries=sum(len(set(x.get("delivered_to",[]) or [])) for x in kindness_records()); banners=len(banners_data)
+    milestones=[(cities>=1,"📍 Первый город в сети"),(cities>=10,"🌍 10 городов добра"),(words>=100,"💌 100 добрых слов"),(words>=1000,"❤️ 1 000 добрых слов"),(deliveries>=100,"🤲 100 полученных слов"),(banners>=1,"🏙️ Первый реальный баннер"),(banners>=5,"✨ 5 реальных баннеров")]
+    return [name for ok,name in milestones if ok]
+
+def network_text():
+    ns=network_summary(); cities=city_aggregates(); chains=network_chains_public(5); votes=city_vote_results(); goal=project_goal()
+    chain_lines=[]
+    for x in chains:
+        path=" → ".join(x["cities"]) if x["cities"] else "города пока не указаны"
+        chain_lines.append(f"• Цепочка №{x['chain_id']}: <b>{x['people']}</b> чел. · {html.escape(path)}")
+    ach=collective_achievements()
+    return ("🌍 <b>Живая сеть добра</b>\n\n"
+            f"📍 Городов: <b>{len(cities)}</b>\n💌 Активных цепочек: <b>{ns['chains']}</b>\n🔗 Передач между людьми: <b>{ns['hops']}</b>\n🔥 Самая длинная цепочка: <b>{ns['longest_chain']}</b> чел.\n\n"
+            "<b>Живые цепочки</b>\n" + ("\n".join(chain_lines) if chain_lines else "• Первая цепочка появится после передачи слова ❤️") +
+            "\n\n🏆 <b>Общие достижения</b>\n" + ("\n".join("• "+x for x in ach) if ach else "• Первое достижение ещё впереди") +
+            f"\n\n🎯 <b>{html.escape(str(goal.get('title','Следующий баннер')))}</b>\n{int(goal.get('raised',0)):,} / {int(goal.get('target',50000)):,} ₽")
+
+def network_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(types.InlineKeyboardButton("💌 Передать добро", callback_data="kindness_write"), types.InlineKeyboardButton("❤️ Получить", callback_data="kindness_receive"))
+    kb.row(types.InlineKeyboardButton("🗳 Город баннера", callback_data="network_vote_open"), types.InlineKeyboardButton("📍 Мой город", callback_data="city_add"))
+    kb.row(types.InlineKeyboardButton("❤️ Поддержать баннер", url=DONATE_URL), types.InlineKeyboardButton("🌐 Открыть сайт", url=SITE_URL))
+    return kb
+
+@bot.message_handler(func=lambda m: m.text == "🌍 Живая сеть добра")
+def network_menu(m):
+    remember_user(m); bot.send_message(m.chat.id, network_text(), parse_mode="HTML", reply_markup=network_keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data == "network_vote_open")
+def network_vote_open(c):
+    bot.answer_callback_query(c.id); kb,_=city_vote_keyboard(); bot.send_message(c.message.chat.id, city_vote_text(), parse_mode="HTML", reply_markup=kb)
+
+
 # 🌍 Живое сообщество добра — только агрегированная анонимная статистика.
 def _parse_iso_dt(value):
     if not value:
@@ -1723,6 +1874,12 @@ def public_stats_payload():
         "activity": live_activity_lines(limit=5),
         "cities": cities,
         "city_stats": {"cities": len(cities), "participants": sum(x["people"] for x in cities)},
+        "network": network_summary(),
+        "chains": network_chains_public(limit=8),
+        "city_vote": city_vote_results()[:10],
+        "collective_achievements": collective_achievements(),
+        "goal": project_goal(),
+        "placements": [{"city": x.get("city", ""), "date": x.get("date", ""), "phrase": x.get("phrase", "")} for x in banners_data[-12:]],
     }
 
 class PublicStatsHandler(BaseHTTPRequestHandler):
