@@ -58,7 +58,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-menu-v2"
+BOT_VERSION = "2026.10.07-achievements-v1"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -1012,6 +1012,40 @@ def admin_broadcast(message):
 
 
 
+# 🏆 Достижения и уровни добра.
+KINDNESS_LEVELS = [
+    (0, "🌱 Начало пути"),
+    (1, "✨ Первый луч"),
+    (5, "☀️ Несёшь тепло"),
+    (25, "❤️ Человек добра"),
+    (50, "🏮 Маяк добра"),
+    (100, "💫 Сердце цепочки"),
+]
+
+def kindness_level(sent_count):
+    current = KINDNESS_LEVELS[0]
+    next_level = None
+    for item in KINDNESS_LEVELS:
+        if sent_count >= item[0]:
+            current = item
+        elif next_level is None:
+            next_level = item
+            break
+    return current, next_level
+
+def achievement_lines(sent, received, done, streak):
+    badges = []
+    if sent >= 1: badges.append("✨ Первый луч — передано первое доброе слово")
+    if sent >= 5: badges.append("☀️ Несёшь тепло — передано 5 добрых слов")
+    if sent >= 25: badges.append("❤️ Человек добра — передано 25 добрых слов")
+    if sent >= 50: badges.append("🏮 Маяк добра — передано 50 добрых слов")
+    if sent >= 100: badges.append("💫 Сердце цепочки — передано 100 добрых слов")
+    if received >= 10: badges.append("🤍 Открытое сердце — получено 10 добрых слов")
+    if done >= 1: badges.append("🌱 Первый шаг — выполнен первый маленький шаг")
+    if done >= 10: badges.append("🌿 Иду вперёд — выполнено 10 маленьких шагов")
+    if streak >= 7: badges.append("🔥 Неделя движения — серия 7 дней")
+    return badges
+
 # 💌 Цепочка добра — анонимные добрые слова между пользователями.
 def kindness_records():
     return load_json_list(KINDNESS_FILE)
@@ -1082,12 +1116,16 @@ def kindness_save(m):
         data = data[-5000:]
     save_kindness_records(data)
     total, people = kindness_stats()
+    user_sent = sum(1 for x in data if x.get("user_id") == m.from_user.id)
+    milestone = {1: "✨ <b>Новое достижение: Первый луч</b>", 5: "☀️ <b>Новое достижение: Несёшь тепло</b>", 25: "❤️ <b>Новое достижение: Человек добра</b>", 50: "🏮 <b>Новое достижение: Маяк добра</b>", 100: "💫 <b>Новое достижение: Сердце цепочки</b>"}.get(user_sent)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❤️ Получить доброе слово", callback_data="kindness_receive"))
     bot.send_message(m.chat.id,
         "❤️ <b>Спасибо. Ваше доброе слово теперь в цепочке.</b>\n\n"
         "Однажды его получит человек, которому, возможно, именно сегодня нужно это прочитать.\n\n"
         f"💌 Всего передано: <b>{total}</b>", parse_mode="HTML", reply_markup=kb)
+    if milestone:
+        bot.send_message(m.chat.id, milestone + f"\n\nТы передал уже <b>{user_sent}</b> добрых слов. Награда появилась в 🏡 «Моём пространстве». ❤️", parse_mode="HTML")
     log_event("Цепочка добра", "Пользователь оставил анонимное доброе слово.")
 
 @bot.callback_query_handler(func=lambda c: c.data == "kindness_receive")
@@ -1445,16 +1483,27 @@ def my_space(message):
     streak = _step_streak(uid)
     kindness = load_json_list(KINDNESS_FILE)
     sent = sum(1 for x in kindness if x.get("user_id") == uid)
-    received = sum(1 for x in kindness if uid in x.get("seen_by", []))
+    received = sum(1 for x in kindness if uid in x.get("delivered_to", []))
     letters = load_json_list(LETTERS_FILE)
     waiting = sum(1 for x in letters if x.get("user_id") == uid and x.get("status") == "waiting")
+    current_level, next_level = kindness_level(sent)
+    badges = achievement_lines(sent, received, done, streak)
+    if next_level:
+        remaining = next_level[0] - sent
+        progress = f"До уровня «{next_level[1]}» осталось передать <b>{remaining}</b>."
+    else:
+        progress = "Ты достиг самого высокого уровня добра. 💫"
+    awards = "\n".join("• " + x for x in badges) if badges else "Пока наград нет — первая появится после первого переданного слова или выполненного шага."
     text = ("🏡 <b>Моё пространство</b>\n\n"
+            f"🏆 Уровень: <b>{current_level[1]}</b>\n"
+            f"{progress}\n\n"
             f"💌 Добрых слов передано: <b>{sent}</b>\n"
             f"❤️ Добрых слов получено: <b>{received}</b>\n"
             f"🌱 Маленьких шагов выполнено: <b>{done}</b>\n"
             f"🔥 Серия маленьких шагов: <b>{streak}</b> дн.\n"
             f"🌙 Писем ждут возвращения: <b>{waiting}</b>\n\n"
-            "Это пространство видно только тебе. Здесь важны не рекорды, а то, что ты продолжаешь двигаться и передавать добро дальше. ❤️")
+            "🎖 <b>Мои достижения</b>\n" + awards +
+            "\n\nЗдесь важны не рекорды, а добро, которое ты передаёшь дальше. ❤️")
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=keyboard())
 
 @bot.message_handler(func=lambda m: True)
