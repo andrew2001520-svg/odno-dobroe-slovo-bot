@@ -58,10 +58,9 @@ QUOTES = [
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("❤️ Мне нужно одно доброе слово")
-    kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
-    kb.row("🌅 Добро дня", "💬 Доброе слово")
-    kb.row("❤️ Одно доброе слово")
+    kb.row("❤️ Мне нужно одно доброе слово", "💌 Передать добро")
+    kb.row("🫂 Мне нужно выговориться", "💬 Доброе слово")
+    kb.row("🌅 Добро дня", "❤️ Одно доброе слово")
     return kb
 
 def quote_buttons():
@@ -185,7 +184,7 @@ def remember_user(message):
 @bot.message_handler(commands=["start"])
 def start(message):
     remember_user(message)
-    bot.send_message(message.chat.id, "❤️ <b>Одно доброе слово</b>\n\nЗдесь можно получить настоящее доброе слово от незнакомого человека, оставить своё следующему, выговориться или просто найти немного поддержки.\n\nВыберите, что вам сейчас нужно 👇", parse_mode="HTML", reply_markup=keyboard())
+    bot.send_message(message.chat.id, "❤️ <b>Одно доброе слово</b>\n\nЭто место, куда можно прийти за добрым словом, оставить добро незнакомому человеку или просто выговориться.\n\nЗдесь не нужно ничего доказывать. Выберите то, что вам сейчас нужно 👇", parse_mode="HTML", reply_markup=keyboard())
 
 @bot.message_handler(commands=["myid"])
 def myid(message):
@@ -231,7 +230,6 @@ def suggest_phrase(message):
 def cancel(message):
     waiting_for_phrase.discard(message.chat.id)
     waiting_for_anonymous.discard(message.chat.id)
-    waiting_for_kindness.discard(message.chat.id)
     if message.from_user and message.from_user.id == ADMIN_ID:
         admin_anon_reply.pop(ADMIN_ID, None)
     bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
@@ -969,154 +967,130 @@ def admin_broadcast(message):
 
 
 
-
-# 💌 Цепочка добра — анонимные добрые слова между пользователями.
+# Цепочка добра: реальные анонимные слова от одного пользователя другому.
 def kindness_records():
     return load_json_list(KINDNESS_FILE)
 
 def save_kindness_records(data):
     save_json_list(KINDNESS_FILE, data)
 
-def kindness_stats():
-    data = kindness_records()
-    return len(data), len({str(x.get("user_id")) for x in data if x.get("user_id") is not None})
+def kindness_stats(data=None):
+    data = data if data is not None else kindness_records()
+    senders = {int(x.get("sender_id", 0)) for x in data if x.get("sender_id")}
+    deliveries = sum(len(x.get("seen_by", [])) for x in data)
+    return len(data), len(senders), deliveries
 
-def kindness_home_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("❤️ Получить слово от человека", callback_data="kindness_receive"))
-    kb.add(types.InlineKeyboardButton("💌 Оставить слово следующему", callback_data="kindness_write"))
-    return kb
-
-@bot.message_handler(func=lambda m: m.text == "❤️ Мне нужно одно доброе слово")
-def kindness_receive_menu(message):
-    remember_user(message)
-    total, people = kindness_stats()
-    bot.send_message(message.chat.id,
-        "❤️ <b>Одно настоящее доброе слово</b>\n\n"
-        "Здесь фразы оставляют сами люди — для того, кто откроет бота после них. "
-        "Никаких имён и профилей. Только несколько добрых слов от человека человеку.\n\n"
-        f"💌 В цепочке уже <b>{total}</b> добрых слов от <b>{people}</b> участников.",
-        parse_mode="HTML", reply_markup=kindness_home_keyboard())
-
-@bot.message_handler(func=lambda m: m.text == "💌 Передать добро")
-def kindness_write_menu(message):
-    remember_user(message)
-    waiting_for_kindness.add(message.chat.id)
-    bot.send_message(message.chat.id,
-        "💌 <b>Оставьте доброе слово незнакомому человеку</b>\n\n"
-        "Напишите короткое искреннее сообщение — то, что вам самому было бы приятно прочитать в трудный день. "
-        "Имя и username получателю не показываются.\n\nДо 700 символов. Отмена: /cancel",
-        parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda c: c.data == "kindness_write")
-def kindness_write_callback(c):
-    bot.answer_callback_query(c.id)
-    waiting_for_kindness.add(c.message.chat.id)
-    bot.send_message(c.message.chat.id,
-        "💌 <b>Напишите доброе слово следующему человеку.</b>\n\n"
-        "До 700 символов. Ваше имя и username не будут показаны. Отмена: /cancel",
-        parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.chat.id in waiting_for_kindness, content_types=["text"])
-def kindness_save(m):
-    text = (m.text or "").strip()
-    if text == "/cancel":
-        waiting_for_kindness.discard(m.chat.id)
-        bot.send_message(m.chat.id, "Отменено ❤️", reply_markup=keyboard())
-        return
-    if not text or len(text) > 700:
-        bot.send_message(m.chat.id, "Сообщение должно быть от 1 до 700 символов. Попробуйте ещё раз или отправьте /cancel.")
-        return
-    waiting_for_kindness.discard(m.chat.id)
-    data = kindness_records()
-    data.append({
-        "id": max([int(x.get("id", 0)) for x in data] or [0]) + 1,
-        "user_id": m.from_user.id,
-        "text": text,
-        "created": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "delivered_to": []
-    })
-    if len(data) > 5000:
-        data = data[-5000:]
-    save_kindness_records(data)
-    total, people = kindness_stats()
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("❤️ Получить доброе слово", callback_data="kindness_receive"))
-    bot.send_message(m.chat.id,
-        "❤️ <b>Спасибо. Ваше доброе слово теперь в цепочке.</b>\n\n"
-        "Однажды его получит человек, которому, возможно, именно сегодня нужно это прочитать.\n\n"
-        f"💌 Всего передано: <b>{total}</b>", parse_mode="HTML", reply_markup=kb)
-    log_event("Цепочка добра", "Пользователь оставил анонимное доброе слово.")
-
-@bot.callback_query_handler(func=lambda c: c.data == "kindness_receive")
-def kindness_receive(c):
-    bot.answer_callback_query(c.id)
-    data = kindness_records()
-    uid = c.from_user.id
-    # Не показываем человеку его собственное сообщение и по возможности не повторяем уже полученное.
-    candidates = [x for x in data if x.get("user_id") != uid and uid not in x.get("delivered_to", [])]
-    if not candidates:
-        candidates = [x for x in data if x.get("user_id") != uid]
-    if not candidates:
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💌 Оставить первое слово", callback_data="kindness_write"))
-        bot.send_message(c.message.chat.id,
-            "🌱 Пока в цепочке нет чужого доброго слова для вас. Можно оставить своё — с него для кого-то всё начнётся. ❤️",
-            reply_markup=kb)
-        return
-    rec = random.choice(candidates)
-    rec.setdefault("delivered_to", [])
-    if uid not in rec["delivered_to"]:
-        rec["delivered_to"].append(uid)
-        # Не раздуваем запись бесконечно.
-        rec["delivered_to"] = rec["delivered_to"][-500:]
-        save_kindness_records(data)
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("💌 Передать добро дальше", callback_data="kindness_write"))
-    kb.add(types.InlineKeyboardButton("❤️ Получить ещё одно", callback_data="kindness_receive"))
-    bot.send_message(c.message.chat.id,
-        "💌 <b>Кто-то оставил эти слова для человека, которому они понадобятся:</b>\n\n"
-        f"«{html.escape(rec.get('text',''))}»\n\n"
-        "❤️ От одного человека — другому. Анонимно.",
-        parse_mode="HTML", reply_markup=kb)
-    log_event("Цепочка добра", "Пользователь получил доброе слово из цепочки.")
-
-# Проектные разделы убраны с главного экрана в один центр.
-def project_hub_keyboard():
+def project_hub(chat_id):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(types.InlineKeyboardButton("❤️ Поддержать", callback_data="hub_donate"),
+    kb.row(types.InlineKeyboardButton("⭐ Поддержать", callback_data="hub_donate"),
            types.InlineKeyboardButton("📸 Баннеры", callback_data="hub_banners"))
     kb.row(types.InlineKeyboardButton("🗳 Голосование", callback_data="hub_vote"),
            types.InlineKeyboardButton("📊 Отчёты", callback_data="hub_reports"))
     kb.row(types.InlineKeyboardButton("✍️ Предложить фразу", callback_data="hub_phrase"),
            types.InlineKeyboardButton("🎯 Следующий баннер", callback_data="hub_next"))
-    kb.row(types.InlineKeyboardButton("🌐 Сайт проекта", url=SITE_URL),
-           types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_TELEGRAM_URL))
-    return kb
+    kb.row(types.InlineKeyboardButton("🌿 О проекте", callback_data="hub_about"),
+           types.InlineKeyboardButton("🌐 Сайт", callback_data="hub_site"))
+    bot.send_message(chat_id,
+        "❤️ <b>Проект «Одно доброе слово»</b>\n\n"
+        "Здесь собраны баннеры, отчёты, голосования и способы помочь проекту.\n\n"
+        "Основные человеческие функции бота всегда остаются в главном меню.",
+        parse_mode="HTML", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "❤️ Одно доброе слово")
-def project_hub(message):
+def open_project_hub(message):
     remember_user(message)
-    bot.send_message(message.chat.id,
-        "❤️ <b>Проект «Одно доброе слово»</b>\n\n"
-        "Здесь — всё о самом проекте: уличные баннеры, отчёты, голосование, поддержка и сайт.\n\n"
-        "Основные функции бота остаются на главном экране.",
-        parse_mode="HTML", reply_markup=project_hub_keyboard())
+    project_hub(message.chat.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("hub_"))
 def project_hub_callback(c):
     bot.answer_callback_query(c.id)
     action = c.data[4:]
     if action == "donate": donate(c.message)
-    elif action == "banners": show_banner(c.message.chat.id, 0)
-    elif action == "vote": send_vote(c.message.chat.id)
-    elif action == "reports": show_report(c.message.chat.id, 0)
-    elif action == "phrase":
-        waiting_for_phrase.add(c.message.chat.id)
-        bot.send_message(c.message.chat.id, "✍️ <b>Предложить свою фразу</b>\n\nНапишите одним сообщением фразу, которую вы хотели бы увидеть на улицах города ❤️\n\nОтмена: /cancel", parse_mode="HTML")
-    elif action == "next":
-        kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("❤️ Помочь разместить", url=DONATE_URL)); kb.add(types.InlineKeyboardButton("🗳 Выбрать фразу", callback_data="open_vote"))
-        bot.send_message(c.message.chat.id, "🎯 <b>Следующий баннер</b>\n\nМы готовим следующий уличный баннер проекта. Вы можете помочь с размещением или принять участие в выборе фразы ❤️", parse_mode="HTML", reply_markup=kb)
+    elif action == "banners": banners(c.message)
+    elif action == "vote": vote_phrase(c.message)
+    elif action == "reports": reports(c.message)
+    elif action == "phrase": suggest_phrase(c.message)
+    elif action == "next": next_banner(c.message)
+    elif action == "about": about(c.message)
+    elif action == "site": website(c.message)
+
+@bot.message_handler(func=lambda m: m.text == "💌 Передать добро")
+def leave_kindness(message):
+    remember_user(message)
+    waiting_for_kindness.add(message.chat.id)
+    bot.send_message(message.chat.id,
+        "💌 <b>Передать добро незнакомому человеку</b>\n\n"
+        "Напишите несколько искренних добрых слов. Имя и username получателю не показываются.\n\n"
+        "Например: «Не знаю, что у тебя сейчас происходит, но надеюсь, что завтра станет немного легче ❤️»\n\n"
+        "До 700 символов. Отмена: /cancel", parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: m.chat.id in waiting_for_kindness, content_types=["text"])
+def receive_kindness(message):
+    text = (message.text or "").strip()
+    if text == "/cancel":
+        waiting_for_kindness.discard(message.chat.id)
+        bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
+        return
+    if not text or len(text) > 700:
+        bot.send_message(message.chat.id, "Напишите от 1 до 700 символов или отправьте /cancel.")
+        return
+    waiting_for_kindness.discard(message.chat.id)
+    data = kindness_records()
+    next_id = max([int(x.get("id", 0)) for x in data] or [0]) + 1
+    data.append({"id": next_id, "text": text, "sender_id": message.from_user.id,
+                 "created": datetime.utcnow().isoformat(timespec="seconds") + "Z", "seen_by": []})
+    if len(data) > 5000:
+        data = data[-5000:]
+    save_kindness_records(data)
+    words, people, deliveries = kindness_stats(data)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❤️ Получить доброе слово", callback_data="kindness_get"))
+    bot.send_message(message.chat.id,
+        f"❤️ <b>Ваше доброе слово осталось в цепочке.</b>\n\n"
+        f"Когда-нибудь его получит человек, которому оно может быть особенно нужно.\n\n"
+        f"💌 В цепочке уже <b>{words}</b> добрых слов от <b>{people}</b> человек.",
+        parse_mode="HTML", reply_markup=kb)
+    log_event("Цепочка добра", "Пользователь оставил анонимное доброе слово.")
+
+@bot.message_handler(func=lambda m: m.text == "❤️ Мне нужно одно доброе слово")
+def get_kindness_message(message):
+    remember_user(message)
+    send_real_kindness(message.chat.id, message.from_user.id)
+
+def send_real_kindness(chat_id, user_id):
+    data = kindness_records()
+    available = [x for x in data if int(x.get("sender_id", 0)) != int(user_id)
+                 and int(user_id) not in [int(v) for v in x.get("seen_by", [])]]
+    if not available:
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("💌 Оставить слово следующему человеку", callback_data="kindness_leave"))
+        bot.send_message(chat_id,
+            "❤️ Сейчас в цепочке пока нет нового слова, которое вы ещё не видели.\n\n"
+            "Можно оставить своё — возможно, именно оно сегодня понадобится кому-то другому.",
+            reply_markup=kb)
+        return
+    rec = random.choice(available)
+    rec.setdefault("seen_by", []).append(int(user_id))
+    save_kindness_records(data)
+    words, people, deliveries = kindness_stats(data)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("💌 Передать добро дальше", callback_data="kindness_leave"))
+    kb.add(types.InlineKeyboardButton("❤️ Получить ещё одно", callback_data="kindness_get"))
+    bot.send_message(chat_id,
+        "❤️ <b>Кто-то, кого вы не знаете, оставил эти слова для другого человека:</b>\n\n"
+        f"<i>«{html.escape(rec.get('text',''))}»</i>\n\n"
+        f"💫 Добрые слова из этой цепочки уже находили людей <b>{deliveries}</b> раз.",
+        parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data in ("kindness_get", "kindness_leave"))
+def kindness_callback(c):
+    bot.answer_callback_query(c.id)
+    if c.data == "kindness_get":
+        send_real_kindness(c.message.chat.id, c.from_user.id)
+    else:
+        waiting_for_kindness.add(c.message.chat.id)
+        bot.send_message(c.message.chat.id,
+            "💌 Напишите доброе сообщение незнакомому человеку.\n\nДо 700 символов. Отмена: /cancel")
 
 # Анонимная поддержка: пользователь может выговориться без показа профиля администратору.
 def anon_records():
@@ -1241,8 +1215,8 @@ def help_command(message):
     remember_user(message)
     bot.send_message(message.chat.id,
         "❤️ <b>Помощь</b>\n\n"
-        "Главное здесь — живые добрые слова между людьми, возможность выговориться и ежедневная поддержка.\n"
-        "Проектные разделы собраны внутри кнопки «❤️ Одно доброе слово».",
+        "Здесь можно получить реальное доброе слово от незнакомого человека, передать добро дальше или анонимно выговориться.\n"
+        "Разделы самого проекта находятся внутри кнопки «❤️ Одно доброе слово».",
         parse_mode="HTML",reply_markup=keyboard())
 
 @bot.message_handler(func=lambda m: True)
