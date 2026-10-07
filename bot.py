@@ -22,7 +22,7 @@ ANON_FILE = "anonymous_messages.json"
 KINDNESS_FILE = "kindness_chain.json"
 STEPS_FILE = "small_steps.json"
 LETTERS_FILE = "private_letters.json"
-CITIES_FILE = "kindness_cities.json"
+DAILY_MISSIONS_FILE = "daily_missions.json"
 SUPPORT_EMAIL = "andrew2001520@icloud.com"
 SUPPORT_TELEGRAM_URL = "https://t.me/raskol4444"
 STAR_PACKS = [25, 50, 100, 250, 500]
@@ -60,7 +60,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-kindness-map-v1"
+BOT_VERSION = "2026.10.07-dobro-dnya-v2"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -68,7 +68,6 @@ def keyboard():
     kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
     kb.row("🌱 Мой маленький шаг", "🌙 Письмо в тишину")
     kb.row("🏡 Моё пространство", "🌍 Добро прямо сейчас")
-    kb.row("📍 Карта добра")
     kb.row("🌅 Добро дня", "💬 Доброе слово")
     kb.row("❤️ Одно доброе слово")
     return kb
@@ -96,7 +95,6 @@ admin_anon_reply = {}
 waiting_for_kindness = set()
 waiting_for_step = set()
 waiting_for_letter = set()
-waiting_for_city = set()
 pending_letters = {}
 
 def load_json_list(path):
@@ -223,15 +221,79 @@ def more_quote(c):
     bot.answer_callback_query(c.id)
     bot.edit_message_text(f"<b>{html.escape(random.choice(QUOTES))}</b>\n\nПусть эти слова сегодня будут именно для тебя. ❤️", c.message.chat.id, c.message.message_id, parse_mode="HTML", reply_markup=quote_buttons())
 
-# 2. Добро дня
+
+DAILY_MISSIONS = [
+    "Напиши человеку, которому давно хотел сказать спасибо.",
+    "Скажи сегодня кому-нибудь искреннее доброе слово.",
+    "Позвони близкому человеку просто так — без повода.",
+    "Сделай маленькое доброе дело так, чтобы не ждать ничего взамен.",
+    "Спроси у близкого человека, как он на самом деле себя чувствует, и выслушай его.",
+    "Поддержи человека, которому сегодня может быть непросто.",
+    "Поблагодари человека за то, что обычно воспринимаешь как должное.",
+    "Напиши короткое тёплое сообщение тому, с кем давно не общался.",
+    "Уступи, помоги или прояви терпение там, где обычно спешишь.",
+    "Сделай сегодня одно небольшое доброе дело для себя.",
+    "Скажи близкому человеку, почему он для тебя важен.",
+    "Оставь после себя сегодня хотя бы одну улыбку.",
+    "Поддержи чью-то идею или старание добрыми словами.",
+    "Найди минуту и искренне похвали человека за то, что он делает хорошо."
+]
+
+def daily_mission_date():
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def daily_mission_text(date_str=None):
+    date_str = date_str or daily_mission_date()
+    try:
+        idx = datetime.strptime(date_str, "%Y-%m-%d").date().toordinal() % len(DAILY_MISSIONS)
+    except Exception:
+        idx = 0
+    return DAILY_MISSIONS[idx]
+
+def daily_mission_records():
+    return load_json_list(DAILY_MISSIONS_FILE)
+
+def daily_mission_done(uid, date_str=None):
+    date_str = date_str or daily_mission_date()
+    return any(str(x.get("user_id")) == str(uid) and x.get("date") == date_str for x in daily_mission_records())
+
+def daily_mission_count(date_str=None):
+    date_str = date_str or daily_mission_date()
+    return len({str(x.get("user_id")) for x in daily_mission_records() if x.get("date") == date_str})
+
+# 2. Добро дня — ежедневная фраза + общая добрая миссия
 @bot.message_handler(func=lambda m: m.text == "🌅 Добро дня")
 def daily_kindness(message):
+    remember_user(message)
+    done = daily_mission_done(message.from_user.id)
+    count = daily_mission_count()
     kb = types.InlineKeyboardMarkup()
+    if not done:
+        kb.add(types.InlineKeyboardButton("❤️ Сделано", callback_data="daily_mission_done"))
     if message.chat.id in subscribers:
-        kb.add(types.InlineKeyboardButton("🔕 Отключить", callback_data="daily_off")); text = "🌅 <b>Добро дня включено</b>\n\nВы подписаны на ежедневную добрую фразу ❤️"
+        kb.add(types.InlineKeyboardButton("🔕 Отключить ежедневное сообщение", callback_data="daily_off"))
+        sub = "🔔 Ежедневное сообщение включено"
     else:
-        kb.add(types.InlineKeyboardButton("🔔 Включить", callback_data="daily_on")); text = "🌅 <b>Добро дня</b>\n\nПолучайте одну добрую фразу каждый день ❤️"
+        kb.add(types.InlineKeyboardButton("🔔 Получать каждый день", callback_data="daily_on"))
+        sub = "🔕 Ежедневное сообщение выключено"
+    status = "✅ Ты уже сделал добро дня." if done else "Когда выполнишь — нажми «❤️ Сделано»."
+    text = ("🌅 <b>Добро дня</b>\n\n" + html.escape(random.choice(QUOTES)) +
+            "\n\n✨ <b>Общая миссия на сегодня</b>\n" + html.escape(daily_mission_text()) +
+            f"\n\n❤️ Сегодня выполнили: <b>{count}</b>\n{status}\n\n{sub}")
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data == "daily_mission_done")
+def daily_mission_complete(c):
+    if daily_mission_done(c.from_user.id):
+        bot.answer_callback_query(c.id, "Уже отмечено ❤️")
+        return
+    data = daily_mission_records()
+    data.append({"user_id": c.from_user.id, "date": daily_mission_date(), "completed": datetime.utcnow().isoformat(timespec="seconds")})
+    save_json_list(DAILY_MISSIONS_FILE, data)
+    count = daily_mission_count()
+    log_event("Добро дня", "Кто-то выполнил общую добрую миссию.")
+    bot.answer_callback_query(c.id, "Засчитано ❤️")
+    bot.send_message(c.message.chat.id, f"❤️ <b>Спасибо.</b> Сегодня эту миссию выполнили уже <b>{count}</b> чел.\n\nОдно маленькое действие тоже меняет день.", parse_mode="HTML", reply_markup=keyboard())
 
 @bot.callback_query_handler(func=lambda c: c.data in ("daily_on", "daily_off"))
 def daily_toggle(c):
@@ -254,9 +316,6 @@ def cancel(message):
     waiting_for_phrase.discard(message.chat.id)
     waiting_for_anonymous.discard(message.chat.id)
     waiting_for_kindness.discard(message.chat.id)
-    waiting_for_step.discard(message.chat.id)
-    waiting_for_letter.discard(message.chat.id)
-    waiting_for_city.discard(message.chat.id)
     if message.from_user and message.from_user.id == ADMIN_ID:
         admin_anon_reply.pop(ADMIN_ID, None)
     bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
@@ -557,7 +616,7 @@ def daily_worker():
         now = datetime.utcnow()
         if now.hour == 6 and last_date != now.date():
             for chat_id in list(subscribers):
-                try: bot.send_message(chat_id, "🌅 <b>Добро дня</b>\n\n" + html.escape(random.choice(QUOTES)), parse_mode="HTML")
+                try: bot.send_message(chat_id, "🌅 <b>Добро дня</b>\n\n" + html.escape(random.choice(QUOTES)) + "\n\n✨ <b>Миссия дня</b>\n" + html.escape(daily_mission_text()) + "\n\nОткрой «🌅 Добро дня» и отметь выполнение ❤️", parse_mode="HTML")
                 except Exception: pass
             last_date = now.date()
 
@@ -1482,93 +1541,6 @@ def letter_action(c):
     save_json_list(LETTERS_FILE, letters)
     bot.send_message(c.message.chat.id, f"⏳ Хорошо. Я верну тебе это письмо через <b>{days}</b> дн.\n\nДо этого момента оно хранится только для доставки обратно в этот чат.", parse_mode="HTML", reply_markup=keyboard())
 
-
-
-# 📍 Карта добра — пользователь добровольно указывает только название города.
-def city_records():
-    return load_json_list(CITIES_FILE)
-
-def save_city_records(data):
-    save_json_list(CITIES_FILE, data)
-
-def normalize_city_name(value):
-    value = " ".join((value or "").strip().split())
-    if not value or len(value) > 80:
-        return None
-    if any(ch.isdigit() for ch in value):
-        return None
-    allowed_extra = " -–—.'’()"
-    if any(not (ch.isalpha() or ch in allowed_extra) for ch in value):
-        return None
-    return value.title()
-
-def city_aggregates():
-    latest = {}
-    for row in city_records():
-        uid = row.get("user_id")
-        city = normalize_city_name(row.get("city"))
-        if uid is not None and city:
-            latest[str(uid)] = city
-    counts = {}
-    for city in latest.values():
-        counts[city] = counts.get(city, 0) + 1
-    return sorted(({"city": city, "people": count} for city, count in counts.items()), key=lambda x: (-x["people"], x["city"]))
-
-def city_map_text():
-    cities = city_aggregates()
-    total_people = sum(x["people"] for x in cities)
-    top = "\n".join(f"• {html.escape(x['city'])} — <b>{x['people']}</b>" for x in cities[:10]) if cities else "• Пока ни одного города. Можно стать первым ❤️"
-    return ("📍 <b>Карта добра</b>\n\n"
-            "Здесь отмечаются только города, которые пользователи указали добровольно. "
-            "Точные координаты, адреса, имена и username не собираются для карты.\n\n"
-            f"🌍 Городов в карте: <b>{len(cities)}</b>\n"
-            f"❤️ Участников на карте: <b>{total_people}</b>\n\n"
-            "<b>Города добра</b>\n" + top)
-
-def city_map_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("❤️ Добавить или изменить мой город", callback_data="city_add"))
-    kb.add(types.InlineKeyboardButton("🔄 Обновить карту", callback_data="city_refresh"))
-    return kb
-
-@bot.message_handler(func=lambda m: m.text == "📍 Карта добра")
-def city_map_menu(message):
-    remember_user(message)
-    bot.send_message(message.chat.id, city_map_text(), parse_mode="HTML", reply_markup=city_map_keyboard())
-
-@bot.callback_query_handler(func=lambda c: c.data == "city_add")
-def city_add_start(c):
-    bot.answer_callback_query(c.id)
-    waiting_for_city.add(c.message.chat.id)
-    bot.send_message(c.message.chat.id,
-        "📍 <b>Напишите только название вашего города.</b>\n\nНапример: Москва, Казань, Aachen.\n"
-        "Не отправляйте адрес, улицу или геолокацию. Отмена: /cancel", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.chat.id in waiting_for_city, content_types=["text"])
-def city_add_save(m):
-    if (m.text or "").strip() == "/cancel":
-        waiting_for_city.discard(m.chat.id)
-        bot.send_message(m.chat.id, "Отменено ❤️", reply_markup=keyboard())
-        return
-    city = normalize_city_name(m.text)
-    if not city:
-        bot.send_message(m.chat.id, "Укажите только название города без адреса и цифр. Например: Москва. Или /cancel")
-        return
-    waiting_for_city.discard(m.chat.id)
-    data = city_records()
-    data = [x for x in data if str(x.get("user_id")) != str(m.from_user.id)]
-    data.append({"user_id": m.from_user.id, "city": city, "updated": datetime.utcnow().isoformat(timespec="seconds") + "Z"})
-    save_city_records(data)
-    bot.send_message(m.chat.id, f"❤️ <b>{html.escape(city)}</b> появился на Карте добра.\n\nПублично показывается только город и общее число участников.", parse_mode="HTML", reply_markup=city_map_keyboard())
-
-@bot.callback_query_handler(func=lambda c: c.data == "city_refresh")
-def city_refresh(c):
-    bot.answer_callback_query(c.id, "Карта обновлена ❤️")
-    try:
-        bot.edit_message_text(city_map_text(), c.message.chat.id, c.message.message_id, parse_mode="HTML", reply_markup=city_map_keyboard())
-    except Exception:
-        pass
-
 # 🌍 Живое сообщество добра — только агрегированная анонимная статистика.
 def _parse_iso_dt(value):
     if not value:
@@ -1601,6 +1573,8 @@ def live_kindness_stats():
         "participants": len(participants),
         "total_words": len(kindness),
         "deliveries": deliveries,
+        "mission_today_completed": daily_mission_count(),
+        "mission_today_text": daily_mission_text(),
     }
 
 def live_activity_lines(limit=5):
@@ -1615,6 +1589,10 @@ def live_activity_lines(limit=5):
         completed = _parse_iso_dt(x.get("completed"))
         if completed:
             items.append((completed, "🌱 Кто-то выполнил маленький шаг"))
+    for x in daily_mission_records():
+        completed = _parse_iso_dt(x.get("completed"))
+        if completed:
+            items.append((completed, "✨ Кто-то выполнил добро дня"))
     items.sort(key=lambda item: item[0], reverse=True)
     return [text for _, text in items[:limit]]
 
@@ -1645,14 +1623,11 @@ def live_community_text():
 # обезличенные типы событий — без Telegram ID, имён, username и текстов сообщений.
 def public_stats_payload():
     stats = live_kindness_stats()
-    cities = city_aggregates()
     return {
         "project": "Одно доброе слово",
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "stats": stats,
         "activity": live_activity_lines(limit=5),
-        "cities": cities,
-        "city_stats": {"cities": len(cities), "participants": sum(x["people"] for x in cities)},
     }
 
 class PublicStatsHandler(BaseHTTPRequestHandler):
@@ -1719,8 +1694,12 @@ def my_space(message):
     received = sum(1 for x in kindness if uid in x.get("delivered_to", []))
     letters = load_json_list(LETTERS_FILE)
     waiting = sum(1 for x in letters if x.get("user_id") == uid and x.get("status") == "waiting")
+    missions_done = sum(1 for x in daily_mission_records() if str(x.get("user_id")) == str(uid))
     current_level, next_level = kindness_level(sent)
     badges = achievement_lines(sent, received, done, streak)
+    if missions_done >= 1: badges.append("🌅 Добро началось — выполнено первое добро дня")
+    if missions_done >= 7: badges.append("✨ Неделя добра — выполнено 7 добрых миссий")
+    if missions_done >= 30: badges.append("💛 Добрая привычка — выполнено 30 добрых миссий")
     if next_level:
         remaining = next_level[0] - sent
         progress = f"До уровня «{next_level[1]}» осталось передать <b>{remaining}</b>."
@@ -1734,7 +1713,8 @@ def my_space(message):
             f"❤️ Добрых слов получено: <b>{received}</b>\n"
             f"🌱 Маленьких шагов выполнено: <b>{done}</b>\n"
             f"🔥 Серия маленьких шагов: <b>{streak}</b> дн.\n"
-            f"🌙 Писем ждут возвращения: <b>{waiting}</b>\n\n"
+            f"🌙 Писем ждут возвращения: <b>{waiting}</b>\n"
+            f"🌅 Добрых миссий выполнено: <b>{missions_done}</b>\n\n"
             "🎖 <b>Мои достижения</b>\n" + awards +
             "\n\nЗдесь важны не рекорды, а добро, которое ты передаёшь дальше. ❤️")
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=keyboard())
