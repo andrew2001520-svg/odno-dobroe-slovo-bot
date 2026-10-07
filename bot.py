@@ -17,7 +17,9 @@ VOTE_FILE = "vote.json"
 REPORTS_FILE = "reports.json"
 EVENTS_FILE = "events.json"
 STARS_FILE = "stars_payments.json"
+ANON_FILE = "anonymous_messages.json"
 SUPPORT_EMAIL = "andrew2001520@icloud.com"
+SUPPORT_TELEGRAM_URL = "https://t.me/raskol4444"
 STAR_PACKS = [25, 50, 100, 250, 500]
 
 QUOTES = [
@@ -60,6 +62,7 @@ def keyboard():
     kb.row("📸 Наши баннеры", "🎯 Следующий баннер")
     kb.row("📊 Отчёты", "🗳 Выбрать фразу")
     kb.row("🌿 О проекте", "🌐 Наш сайт")
+    kb.row("🫂 Мне нужно выговориться")
     return kb
 
 def quote_buttons():
@@ -80,6 +83,8 @@ def save_subscribers():
 
 subscribers = load_subscribers()
 waiting_for_phrase = set()
+waiting_for_anonymous = set()
+admin_anon_reply = {}
 
 def load_json_list(path):
     try:
@@ -224,7 +229,11 @@ def suggest_phrase(message):
 
 @bot.message_handler(commands=["cancel"])
 def cancel(message):
-    waiting_for_phrase.discard(message.chat.id); bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
+    waiting_for_phrase.discard(message.chat.id)
+    waiting_for_anonymous.discard(message.chat.id)
+    if message.from_user and message.from_user.id == ADMIN_ID:
+        admin_anon_reply.pop(ADMIN_ID, None)
+    bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
 
 @bot.message_handler(func=lambda m: m.chat.id in waiting_for_phrase, content_types=["text"])
 def receive_phrase(message):
@@ -420,19 +429,30 @@ def save_stars_payments(data):
     except Exception:
         pass
 
+def stars_stats():
+    payments = load_stars_payments()
+    total = sum(int(x.get("amount", 0)) for x in payments)
+    supporters = len({str(x.get("user_id")) for x in payments if x.get("user_id") is not None})
+    return total, len(payments), supporters
+
 def stars_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
     buttons = [types.InlineKeyboardButton(f"⭐ {amount}", callback_data=f"stars_{amount}") for amount in STAR_PACKS]
     kb.add(*buttons)
     kb.add(types.InlineKeyboardButton("💳 Поддержать рублями", url=DONATE_URL))
+    kb.add(types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_TELEGRAM_URL))
     return kb
 
 @bot.message_handler(func=lambda m: m.text == "❤️ Поддержать проект")
 def donate(message):
+    total_stars, payments_count, supporters_count = stars_stats()
     bot.send_message(
         message.chat.id,
         "❤️ <b>Поддержать проект</b>\n\n"
         "Ваш вклад помогает оплачивать печать, аренду рекламных конструкций, монтаж и размещение баннеров.\n\n"
+        f"⭐ Уже собрано: <b>{total_stars} Stars</b>\n"
+        f"❤️ Поддержали: <b>{supporters_count}</b> чел.\n"
+        f"🧾 Платежей Stars: <b>{payments_count}</b>\n\n"
         "Можно поддержать проект Telegram Stars ⭐ или рублями 💳",
         parse_mode="HTML", reply_markup=stars_keyboard())
 
@@ -480,7 +500,14 @@ def stars_success(message):
         log_event("stars_payment", f"{message.from_user.id}: {p.total_amount} XTR")
     except Exception:
         pass
-    bot.send_message(message.chat.id, f"⭐ <b>Спасибо за поддержку!</b>\n\nПолучено: <b>{p.total_amount} ⭐</b>\nВаш вклад помогает проекту «Одно доброе слово» ❤️", parse_mode="HTML")
+    total_stars, payments_count, supporters_count = stars_stats()
+    bot.send_message(
+        message.chat.id,
+        f"⭐ <b>Спасибо за поддержку!</b>\n\n"
+        f"Получено: <b>{p.total_amount} ⭐</b>\n"
+        f"Всего проект получил: <b>{total_stars} ⭐</b>\n"
+        f"Проект поддержали: <b>{supporters_count}</b> чел. ❤️",
+        parse_mode="HTML")
     try:
         bot.send_message(ADMIN_ID, f"⭐ <b>Новая поддержка Stars</b>\n\nПользователь: {message.from_user.id}\nСумма: <b>{p.total_amount} ⭐</b>", parse_mode="HTML")
     except Exception:
@@ -939,6 +966,125 @@ def admin_broadcast(message):
             failed += 1
     bot.send_message(message.chat.id, f"✅ <b>Рассылка завершена</b>\n\nДоставлено: <b>{sent}</b>\nНе доставлено: <b>{failed}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
+
+
+# Анонимная поддержка: пользователь может выговориться без показа профиля администратору.
+def anon_records():
+    return load_json_list(ANON_FILE)
+
+def save_anon_records(data):
+    save_json_list(ANON_FILE, data)
+
+def anon_menu():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("✍️ Написать анонимно", callback_data="anon_write"))
+    kb.add(types.InlineKeyboardButton("🚨 Мне нужна срочная помощь", callback_data="anon_emergency"))
+    return kb
+
+@bot.message_handler(func=lambda m: m.text == "🫂 Мне нужно выговориться")
+def anonymous_support(message):
+    remember_user(message)
+    bot.send_message(
+        message.chat.id,
+        "🫂 <b>Здесь можно выговориться</b>\n\n"
+        "Иногда важно просто сказать то, что тяжело держать в себе. Напишите одним сообщением — без осуждения. ❤️\n\n"
+        "Администратору не показываются ваше имя, username или ссылка на профиль. "
+        "Чтобы бот мог доставить вам возможный ответ, Telegram ID технически сохраняется внутри бота и не выводится администратору.\n\n"
+        "Это не экстренная и не медицинская служба.",
+        parse_mode="HTML", reply_markup=anon_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data == "anon_write")
+def anon_write_start(c):
+    bot.answer_callback_query(c.id)
+    waiting_for_anonymous.add(c.message.chat.id)
+    bot.send_message(c.message.chat.id,
+        "✍️ <b>Напишите всё, что хочется сказать.</b>\n\n"
+        "Сообщение может быть до 3500 символов. Для отмены отправьте /cancel.",
+        parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda c: c.data == "anon_emergency")
+def anon_emergency(c):
+    bot.answer_callback_query(c.id)
+    bot.send_message(c.message.chat.id,
+        "🚨 <b>Если вам или кому-то рядом прямо сейчас угрожает опасность</b>, "
+        "обратитесь в местную экстренную службу или к человеку, который может физически быть рядом. "
+        "Во многих странах единый номер экстренной помощи — <b>112</b>.\n\n"
+        "Если непосредственной опасности нет, вы всё равно можете написать сюда и выговориться. ❤️",
+        parse_mode="HTML", reply_markup=anon_menu())
+
+@bot.message_handler(func=lambda m: m.chat.id in waiting_for_anonymous, content_types=["text"])
+def receive_anonymous(m):
+    if (m.text or "").strip() == "/cancel":
+        waiting_for_anonymous.discard(m.chat.id)
+        bot.send_message(m.chat.id, "Отменено ❤️", reply_markup=keyboard())
+        return
+    text = (m.text or "").strip()
+    if not text or len(text) > 3500:
+        bot.send_message(m.chat.id, "Сообщение должно содержать от 1 до 3500 символов. Попробуйте ещё раз или отправьте /cancel.")
+        return
+    waiting_for_anonymous.discard(m.chat.id)
+    data = anon_records()
+    next_id = max([int(x.get("anon_id", 0)) for x in data] or [0]) + 1
+    rec = {"anon_id": next_id, "user_id": m.from_user.id, "chat_id": m.chat.id,
+           "text": text, "created": datetime.utcnow().isoformat(timespec="seconds") + "Z", "replied": False}
+    data.append(rec)
+    if len(data) > 1000:
+        data = data[-1000:]
+    save_anon_records(data)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💬 Ответить анонимно", callback_data=f"anonreply_{next_id}"))
+    bot.send_message(ADMIN_ID,
+        f"🫂 <b>Новое анонимное сообщение #{next_id}</b>\n\n{html.escape(text)}\n\n"
+        "Личные данные отправителя не отображаются.",
+        parse_mode="HTML", reply_markup=kb)
+    bot.send_message(m.chat.id,
+        "❤️ <b>Сообщение отправлено анонимно.</b>\n\nСпасибо, что поделились. Если администратор ответит, ответ придёт сюда через бота.",
+        parse_mode="HTML", reply_markup=keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("anonreply_"))
+def anon_reply_start(c):
+    if c.from_user.id != ADMIN_ID:
+        return bot.answer_callback_query(c.id, "Недоступно", show_alert=True)
+    try:
+        anon_id = int(c.data.split("_", 1)[1])
+    except Exception:
+        return bot.answer_callback_query(c.id, "Ошибка")
+    rec = next((x for x in anon_records() if int(x.get("anon_id", 0)) == anon_id), None)
+    if not rec:
+        return bot.answer_callback_query(c.id, "Сообщение не найдено", show_alert=True)
+    admin_anon_reply[ADMIN_ID] = anon_id
+    bot.answer_callback_query(c.id)
+    bot.send_message(ADMIN_ID,
+        f"💬 Напишите ответ для анонимного сообщения #{anon_id}.\n\n"
+        "Пользователь получит только текст ответа от проекта. Для отмены: /cancel")
+
+@bot.message_handler(func=lambda m: m.from_user and m.from_user.id == ADMIN_ID and ADMIN_ID in admin_anon_reply, content_types=["text"])
+def anon_reply_send(m):
+    if (m.text or "").strip() == "/cancel":
+        admin_anon_reply.pop(ADMIN_ID, None)
+        bot.send_message(ADMIN_ID, "Ответ отменён.", reply_markup=admin_menu())
+        return
+    anon_id = admin_anon_reply.pop(ADMIN_ID)
+    data = anon_records()
+    rec = next((x for x in data if int(x.get("anon_id", 0)) == anon_id), None)
+    if not rec:
+        bot.send_message(ADMIN_ID, "Сообщение не найдено.")
+        return
+    answer = (m.text or "").strip()
+    if not answer:
+        bot.send_message(ADMIN_ID, "Пустой ответ не отправлен.")
+        return
+    try:
+        bot.send_message(int(rec["chat_id"]),
+            "💌 <b>Вам пришёл ответ</b>\n\n" + html.escape(answer) +
+            "\n\n❤️ «Одно доброе слово»",
+            parse_mode="HTML", reply_markup=keyboard())
+        rec["replied"] = True
+        rec["reply_time"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        save_anon_records(data)
+        bot.send_message(ADMIN_ID, f"✅ Ответ на сообщение #{anon_id} отправлен анонимно.", reply_markup=admin_menu())
+    except Exception:
+        bot.send_message(ADMIN_ID, "❌ Не удалось доставить ответ пользователю.", reply_markup=admin_menu())
 
 @bot.message_handler(commands=["help"])
 def help_command(message):
