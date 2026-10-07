@@ -16,6 +16,9 @@ PHRASES_FILE = "suggested_phrases.json"
 VOTE_FILE = "vote.json"
 REPORTS_FILE = "reports.json"
 EVENTS_FILE = "events.json"
+STARS_FILE = "stars_payments.json"
+SUPPORT_EMAIL = "andrew2001520@icloud.com"
+STAR_PACKS = [25, 50, 100, 250, 500]
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -402,10 +405,90 @@ def open_vote(c):
     bot.answer_callback_query(c.id)
     send_vote(c.message.chat.id)
 
+def load_stars_payments():
+    try:
+        with open(STARS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def save_stars_payments(data):
+    try:
+        with open(STARS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def stars_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = [types.InlineKeyboardButton(f"⭐ {amount}", callback_data=f"stars_{amount}") for amount in STAR_PACKS]
+    kb.add(*buttons)
+    kb.add(types.InlineKeyboardButton("💳 Поддержать рублями", url=DONATE_URL))
+    return kb
+
 @bot.message_handler(func=lambda m: m.text == "❤️ Поддержать проект")
 def donate(message):
-    kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("❤️ Пожертвовать", url=DONATE_URL))
-    bot.send_message(message.chat.id, "❤️ <b>Поддержать проект</b>\n\nВаш вклад помогает оплачивать печать, аренду рекламных конструкций, монтаж и размещение баннеров.\n\nНажмите кнопку ниже, чтобы поддержать проект ❤️", parse_mode="HTML", reply_markup=kb)
+    bot.send_message(
+        message.chat.id,
+        "❤️ <b>Поддержать проект</b>\n\n"
+        "Ваш вклад помогает оплачивать печать, аренду рекламных конструкций, монтаж и размещение баннеров.\n\n"
+        "Можно поддержать проект Telegram Stars ⭐ или рублями 💳",
+        parse_mode="HTML", reply_markup=stars_keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("stars_"))
+def stars_invoice(c):
+    try:
+        amount = int(c.data.split("_", 1)[1])
+    except Exception:
+        return bot.answer_callback_query(c.id, "Ошибка суммы")
+    if amount not in STAR_PACKS:
+        return bot.answer_callback_query(c.id, "Недоступная сумма")
+    bot.answer_callback_query(c.id)
+    bot.send_invoice(
+        c.message.chat.id,
+        title="Поддержать «Одно доброе слово»",
+        description=f"Добровольная поддержка социального проекта — {amount} Telegram Stars",
+        invoice_payload=f"support_stars:{amount}:{c.from_user.id}:{int(time.time())}",
+        provider_token="",
+        currency="XTR",
+        prices=[types.LabeledPrice(label="Поддержка проекта", amount=amount)],
+        start_parameter="support-stars")
+
+@bot.pre_checkout_query_handler(func=lambda q: True)
+def stars_pre_checkout(q):
+    if q.currency != "XTR" or not q.invoice_payload.startswith("support_stars:"):
+        return bot.answer_pre_checkout_query(q.id, ok=False, error_message="Не удалось проверить платёж. Попробуйте ещё раз.")
+    bot.answer_pre_checkout_query(q.id, ok=True)
+
+@bot.message_handler(content_types=["successful_payment"])
+def stars_success(message):
+    p = message.successful_payment
+    record = {
+        "user_id": message.from_user.id,
+        "username": message.from_user.username or "",
+        "first_name": message.from_user.first_name or "",
+        "amount": p.total_amount,
+        "currency": p.currency,
+        "payload": p.invoice_payload,
+        "telegram_payment_charge_id": p.telegram_payment_charge_id,
+        "provider_payment_charge_id": getattr(p, "provider_payment_charge_id", ""),
+        "date": datetime.utcnow().isoformat() + "Z"
+    }
+    payments = load_stars_payments(); payments.append(record); save_stars_payments(payments)
+    try:
+        log_event("stars_payment", f"{message.from_user.id}: {p.total_amount} XTR")
+    except Exception:
+        pass
+    bot.send_message(message.chat.id, f"⭐ <b>Спасибо за поддержку!</b>\n\nПолучено: <b>{p.total_amount} ⭐</b>\nВаш вклад помогает проекту «Одно доброе слово» ❤️", parse_mode="HTML")
+    try:
+        bot.send_message(ADMIN_ID, f"⭐ <b>Новая поддержка Stars</b>\n\nПользователь: {message.from_user.id}\nСумма: <b>{p.total_amount} ⭐</b>", parse_mode="HTML")
+    except Exception:
+        pass
+
+@bot.message_handler(commands=["paysupport"])
+def pay_support(message):
+    bot.send_message(message.chat.id, f"💬 <b>Поддержка по платежам</b>\n\nЕсли возник вопрос по Telegram Stars или пожертвованию, напишите:\n📧 {SUPPORT_EMAIL}\n✈️ @raskol4444", parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == "🌿 О проекте")
 def about(message):
@@ -517,7 +600,7 @@ def admin_actions(c):
     bot.answer_callback_query(c.id)
 
     if c.data == "admin_stats":
-        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n👥 Пользователей: <b>{len(users_data)}</b>\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>\n✍️ Предложенных фраз: <b>{len(phrases_data)}</b>\n📸 Баннеров: <b>{len(banners_data)}</b>\n📊 Отчётов: <b>{len(reports_data)}</b>", parse_mode="HTML", reply_markup=admin_menu())
+        bot.send_message(c.message.chat.id, f"📊 <b>Статистика</b>\n\n👥 Пользователей: <b>{len(users_data)}</b>\n🌅 Подписчиков «Добра дня»: <b>{len(subscribers)}</b>\n✍️ Предложенных фраз: <b>{len(phrases_data)}</b>\n📸 Баннеров: <b>{len(banners_data)}</b>\n📊 Отчётов: <b>{len(reports_data)}</b>\n⭐ Stars получено: <b>{sum(int(x.get('amount',0)) for x in load_stars_payments())}</b>\n⭐ Платежей Stars: <b>{len(load_stars_payments())}</b>", parse_mode="HTML", reply_markup=admin_menu())
 
     elif c.data == "admin_broadcast":
         admin_waiting_broadcast.add(c.message.chat.id)
