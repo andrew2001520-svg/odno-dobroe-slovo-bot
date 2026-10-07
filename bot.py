@@ -22,6 +22,7 @@ ANON_FILE = "anonymous_messages.json"
 KINDNESS_FILE = "kindness_chain.json"
 STEPS_FILE = "small_steps.json"
 LETTERS_FILE = "private_letters.json"
+CITIES_FILE = "kindness_cities.json"
 DAILY_MISSIONS_FILE = "daily_missions.json"
 SUPPORT_EMAIL = "andrew2001520@icloud.com"
 SUPPORT_TELEGRAM_URL = "https://t.me/raskol4444"
@@ -68,6 +69,7 @@ def keyboard():
     kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
     kb.row("🌱 Мой маленький шаг", "🌙 Письмо в тишину")
     kb.row("🏡 Моё пространство", "🌍 Добро прямо сейчас")
+    kb.row("📍 Карта добра")
     kb.row("🌅 Добро дня", "💬 Доброе слово")
     kb.row("❤️ Одно доброе слово")
     return kb
@@ -95,6 +97,7 @@ admin_anon_reply = {}
 waiting_for_kindness = set()
 waiting_for_step = set()
 waiting_for_letter = set()
+waiting_for_city = set()
 pending_letters = {}
 
 def load_json_list(path):
@@ -316,6 +319,9 @@ def cancel(message):
     waiting_for_phrase.discard(message.chat.id)
     waiting_for_anonymous.discard(message.chat.id)
     waiting_for_kindness.discard(message.chat.id)
+    waiting_for_step.discard(message.chat.id)
+    waiting_for_letter.discard(message.chat.id)
+    waiting_for_city.discard(message.chat.id)
     if message.from_user and message.from_user.id == ADMIN_ID:
         admin_anon_reply.pop(ADMIN_ID, None)
     bot.send_message(message.chat.id, "Отменено ❤️", reply_markup=keyboard())
@@ -1541,6 +1547,92 @@ def letter_action(c):
     save_json_list(LETTERS_FILE, letters)
     bot.send_message(c.message.chat.id, f"⏳ Хорошо. Я верну тебе это письмо через <b>{days}</b> дн.\n\nДо этого момента оно хранится только для доставки обратно в этот чат.", parse_mode="HTML", reply_markup=keyboard())
 
+# 📍 Карта добра — пользователь добровольно указывает только название города.
+def city_records():
+    return load_json_list(CITIES_FILE)
+
+def save_city_records(data):
+    save_json_list(CITIES_FILE, data)
+
+def normalize_city_name(value):
+    value = " ".join((value or "").strip().split())
+    if not value or len(value) > 80:
+        return None
+    if any(ch.isdigit() for ch in value):
+        return None
+    allowed_extra = " -–—.'’()"
+    if any(not (ch.isalpha() or ch in allowed_extra) for ch in value):
+        return None
+    return value.title()
+
+def city_aggregates():
+    latest = {}
+    for row in city_records():
+        uid = row.get("user_id")
+        city = normalize_city_name(row.get("city"))
+        if uid is not None and city:
+            latest[str(uid)] = city
+    counts = {}
+    for city in latest.values():
+        counts[city] = counts.get(city, 0) + 1
+    return sorted(({"city": city, "people": count} for city, count in counts.items()), key=lambda x: (-x["people"], x["city"]))
+
+def city_map_text():
+    cities = city_aggregates()
+    total_people = sum(x["people"] for x in cities)
+    top = "\n".join(f"• {html.escape(x['city'])} — <b>{x['people']}</b>" for x in cities[:10]) if cities else "• Пока ни одного города. Можно стать первым ❤️"
+    return ("📍 <b>Карта добра</b>\n\n"
+            "Здесь отмечаются только города, которые пользователи указали добровольно. "
+            "Точные координаты, адреса, имена и username не собираются для карты.\n\n"
+            f"🌍 Городов в карте: <b>{len(cities)}</b>\n"
+            f"❤️ Участников на карте: <b>{total_people}</b>\n\n"
+            "<b>Города добра</b>\n" + top)
+
+def city_map_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("❤️ Добавить или изменить мой город", callback_data="city_add"))
+    kb.add(types.InlineKeyboardButton("🔄 Обновить карту", callback_data="city_refresh"))
+    return kb
+
+@bot.message_handler(func=lambda m: m.text == "📍 Карта добра")
+def city_map_menu(message):
+    remember_user(message)
+    bot.send_message(message.chat.id, city_map_text(), parse_mode="HTML", reply_markup=city_map_keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data == "city_add")
+def city_add_start(c):
+    bot.answer_callback_query(c.id)
+    waiting_for_city.add(c.message.chat.id)
+    bot.send_message(c.message.chat.id,
+        "📍 <b>Напишите только название вашего города.</b>\n\nНапример: Москва, Казань, Aachen.\n"
+        "Не отправляйте адрес, улицу или геолокацию. Отмена: /cancel", parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: m.chat.id in waiting_for_city, content_types=["text"])
+def city_add_save(m):
+    if (m.text or "").strip() == "/cancel":
+        waiting_for_city.discard(m.chat.id)
+        bot.send_message(m.chat.id, "Отменено ❤️", reply_markup=keyboard())
+        return
+    city = normalize_city_name(m.text)
+    if not city:
+        bot.send_message(m.chat.id, "Укажите только название города без адреса и цифр. Например: Москва. Или /cancel")
+        return
+    waiting_for_city.discard(m.chat.id)
+    data = city_records()
+    data = [x for x in data if str(x.get("user_id")) != str(m.from_user.id)]
+    data.append({"user_id": m.from_user.id, "city": city, "updated": datetime.utcnow().isoformat(timespec="seconds") + "Z"})
+    save_city_records(data)
+    bot.send_message(m.chat.id, f"❤️ <b>{html.escape(city)}</b> появился на Карте добра.\n\nПублично показывается только город и общее число участников.", parse_mode="HTML", reply_markup=city_map_keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data == "city_refresh")
+def city_refresh(c):
+    bot.answer_callback_query(c.id, "Карта обновлена ❤️")
+    try:
+        bot.edit_message_text(city_map_text(), c.message.chat.id, c.message.message_id, parse_mode="HTML", reply_markup=city_map_keyboard())
+    except Exception:
+        pass
+
+
 # 🌍 Живое сообщество добра — только агрегированная анонимная статистика.
 def _parse_iso_dt(value):
     if not value:
@@ -1623,11 +1715,14 @@ def live_community_text():
 # обезличенные типы событий — без Telegram ID, имён, username и текстов сообщений.
 def public_stats_payload():
     stats = live_kindness_stats()
+    cities = city_aggregates()
     return {
         "project": "Одно доброе слово",
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "stats": stats,
         "activity": live_activity_lines(limit=5),
+        "cities": cities,
+        "city_stats": {"cities": len(cities), "participants": sum(x["people"] for x in cities)},
     }
 
 class PublicStatsHandler(BaseHTTPRequestHandler):
