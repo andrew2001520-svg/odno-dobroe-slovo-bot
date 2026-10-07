@@ -1,4 +1,4 @@
-import os, random, html, json, threading, time, zipfile
+import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +30,94 @@ PROJECT_GOAL_FILE = "project_goal.json"
 SUPPORT_EMAIL = "andrew2001520@icloud.com"
 SUPPORT_TELEGRAM_URL = "https://t.me/raskol4444"
 STAR_PACKS = [25, 50, 100, 250, 500]
+
+CABINET_SESSION_TTL = 60 * 60 * 24 * 30
+
+def _cabinet_b64encode(raw):
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+def _cabinet_b64decode(value):
+    value += "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value.encode("ascii"))
+
+def cabinet_make_session(user_id):
+    expires = int(time.time()) + CABINET_SESSION_TTL
+    payload = f"{int(user_id)}:{expires}"
+    sig = hmac.new(TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return _cabinet_b64encode(f"{payload}:{sig}".encode("utf-8"))
+
+def cabinet_check_session(token):
+    try:
+        raw = _cabinet_b64decode(token).decode("utf-8")
+        user_id, expires, sig = raw.split(":", 2)
+        payload = f"{user_id}:{expires}"
+        expected = hmac.new(TOKEN.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected) or int(expires) < int(time.time()):
+            return None
+        return int(user_id)
+    except Exception:
+        return None
+
+def verify_telegram_login(data):
+    try:
+        supplied_hash = str(data.get("hash", ""))
+        auth_date = int(data.get("auth_date", 0))
+        if not supplied_hash or abs(int(time.time()) - auth_date) > 86400:
+            return None
+        fields = []
+        for key, value in data.items():
+            if key == "hash" or value is None:
+                continue
+            fields.append(f"{key}={value}")
+        check_string = "\n".join(sorted(fields))
+        secret_key = hashlib.sha256(TOKEN.encode("utf-8")).digest()
+        expected = hmac.new(secret_key, check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, supplied_hash):
+            return None
+        return int(data["id"])
+    except Exception:
+        return None
+
+def cabinet_profile_payload(uid):
+    steps = _user_steps(uid)
+    done = sum(1 for x in steps if x.get("status") == "done")
+    streak = _step_streak(uid)
+    kindness = kindness_records()
+    sent = sum(1 for x in kindness if str(x.get("user_id")) == str(uid))
+    received = sum(1 for x in kindness if str(uid) in {str(v) for v in (x.get("delivered_to", []) or [])})
+    letters = load_json_list(LETTERS_FILE)
+    waiting = sum(1 for x in letters if str(x.get("user_id")) == str(uid) and x.get("status") == "waiting")
+    missions_done = sum(1 for x in daily_mission_records() if str(x.get("user_id")) == str(uid))
+    current_level, next_level = kindness_level(sent)
+    badges = achievement_lines(sent, received, done, streak)
+    if missions_done >= 1: badges.append("🌅 Добро началось")
+    if missions_done >= 7: badges.append("✨ Неделя добра")
+    if missions_done >= 30: badges.append("💛 Добрая привычка")
+    city = ""
+    for row in reversed(city_records()):
+        if str(row.get("user_id")) == str(uid):
+            city = normalize_city_name(row.get("city")) or ""
+            break
+    user = next((x for x in users_data if str(x.get("id")) == str(uid)), {})
+    next_target = next_level[0] if next_level else current_level[0]
+    return {
+        "ok": True,
+        "profile": {
+            "first_name": user.get("first_name", ""),
+            "city": city,
+            "level": current_level[1],
+            "sent": sent,
+            "received": received,
+            "steps_done": done,
+            "streak": streak,
+            "letters_waiting": waiting,
+            "missions_done": missions_done,
+            "achievements": badges,
+            "next_level_target": next_target,
+            "progress_percent": 100 if not next_level else max(0, min(100, round(sent / max(1, next_target) * 100))),
+        }
+    }
+
 
 QUOTES = [
 "❤️ Ты справишься.", "🌿 Всё ещё впереди.", "❤️ Ты важен.",
@@ -64,7 +152,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-live-network-v1"
+BOT_VERSION = "2026.10.07-cabinet-v1"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -1889,23 +1977,60 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", SITE_URL)
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 65536:
+                return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def _session_uid(self):
+        value = self.headers.get("Authorization", "")
+        if not value.startswith("Bearer "):
+            return None
+        return cabinet_check_session(value[7:].strip())
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", SITE_URL)
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
+
+    def do_POST(self):
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/auth/telegram":
+            data = self._json_body()
+            uid = verify_telegram_login(data)
+            if not uid:
+                self._send_json(401, {"ok": False, "error": "telegram_auth_failed"})
+                return
+            user = next((x for x in users_data if str(x.get("id")) == str(uid)), None)
+            if not user:
+                self._send_json(403, {"ok": False, "error": "open_bot_first"})
+                return
+            self._send_json(200, {"ok": True, "token": cabinet_make_session(uid)})
+        else:
+            self._send_json(404, {"error": "not_found"})
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path == "/api/stats":
             self._send_json(200, public_stats_payload())
+        elif path == "/api/me":
+            uid = self._session_uid()
+            if not uid:
+                self._send_json(401, {"ok": False, "error": "unauthorized"})
+            else:
+                self._send_json(200, cabinet_profile_payload(uid))
         elif path in ("/", "/health"):
             self._send_json(200, {"ok": True, "service": "odno-dobroe-slovo", "version": BOT_VERSION})
         else:
