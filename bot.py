@@ -1,6 +1,7 @@
 import os, random, html, json, threading, time, zipfile
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import telebot
 from telebot import types
 
@@ -58,7 +59,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-live-community-v1"
+BOT_VERSION = "2026.10.07-public-stats-api-v1"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -1547,6 +1548,55 @@ def live_community_text():
         "\n\nКаждое число здесь складывается из настоящих действий пользователей бота."
     )
 
+# Публичный API для сайта. Возвращает только агрегированную статистику и
+# обезличенные типы событий — без Telegram ID, имён, username и текстов сообщений.
+def public_stats_payload():
+    stats = live_kindness_stats()
+    return {
+        "project": "Одно доброе слово",
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "stats": stats,
+        "activity": live_activity_lines(limit=5),
+    }
+
+class PublicStatsHandler(BaseHTTPRequestHandler):
+    def _send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", SITE_URL)
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", SITE_URL)
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/stats":
+            self._send_json(200, public_stats_payload())
+        elif path in ("/", "/health"):
+            self._send_json(200, {"ok": True, "service": "odno-dobroe-slovo", "version": BOT_VERSION})
+        else:
+            self._send_json(404, {"error": "not_found"})
+
+    def log_message(self, format, *args):
+        return
+
+def run_public_api():
+    port = int(os.environ.get("PORT", "8080"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), PublicStatsHandler)
+    print(f"Public stats API started on port {port}")
+    server.serve_forever()
+
 @bot.message_handler(func=lambda m: m.text == "🌍 Добро прямо сейчас")
 def live_community(message):
     remember_user(message)
@@ -1600,5 +1650,6 @@ def fallback(message):
 
 if __name__ == "__main__":
     threading.Thread(target=daily_worker, daemon=True).start()
+    threading.Thread(target=run_public_api, daemon=True).start()
     print("Bot started")
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
