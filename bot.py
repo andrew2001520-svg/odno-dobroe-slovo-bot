@@ -8,7 +8,7 @@ from telebot import types
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = telebot.TeleBot(TOKEN)
 ADMIN_ID = 5844296950
-DONATE_URL = "https://pro.selfwork.ru/to/
+DONATE_URL = "https://pro.selfwork.ru/to/02197162"
 SITE_URL = "https://odnodobroeslovo.ru"
 02197162"
 # --- Личный кабинет 1.0 ---
