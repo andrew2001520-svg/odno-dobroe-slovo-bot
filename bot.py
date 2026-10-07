@@ -10,7 +10,6 @@ bot = telebot.TeleBot(TOKEN)
 ADMIN_ID = 5844296950
 DONATE_URL = "https://pro.selfwork.ru/to/02197162"
 SITE_URL = "https://odnodobroeslovo.ru"
-02197162"
 # --- Личный кабинет 1.0 ---
 CABINET_SESSION_SECRET = os.environ.get("CABINET_SESSION_SECRET", TOKEN)
 CABINET_SESSION_TTL = 60 * 60 * 24 * 30  # 30 дней
