@@ -1,4 +1,4 @@
-import os, random, html, json, threading, time, zipfile
+import os, random, html, json, threading, hashlib, hmac, time, base64
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,8 +8,46 @@ from telebot import types
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 bot = telebot.TeleBot(TOKEN)
 ADMIN_ID = 5844296950
-DONATE_URL = "https://pro.selfwork.ru/to/02197162"
+DONATE_URL = "https://pro.selfwork.ru/to/
 SITE_URL = "https://odnodobroeslovo.ru"
+02197162"
+# --- Личный кабинет 1.0 ---
+CABINET_SESSION_SECRET = os.environ.get("CABINET_SESSION_SECRET", TOKEN)
+CABINET_SESSION_TTL = 60 * 60 * 24 * 30  # 30 дней
+
+
+def cabinet_sign(value):
+    return hmac.new(
+        CABINET_SESSION_SECRET.encode("utf-8"),
+        value.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def cabinet_make_session(user_id):
+    expires = int(time.time()) + CABINET_SESSION_TTL
+    payload = f"{int(user_id)}:{expires}"
+    signature = cabinet_sign(payload)
+    token = base64.urlsafe_b64encode(
+        f"{payload}:{signature}".encode("utf-8")
+    ).decode("utf-8")
+    return token
+    def cabinet_check_session(token):
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+        user_id, expires, signature = raw.split(":", 2)
+
+        payload = f"{user_id}:{expires}"
+
+        if not hmac.compare_digest(signature, cabinet_sign(payload)):
+            return None
+
+        if int(expires) < int(time.time()):
+            return None
+
+        return int(user_id)
+    except Exception:
+        return None
 SUBS_FILE = "daily_subscribers.json"
 BANNERS_FILE = "banners.json"
 USERS_FILE = "users.json"
