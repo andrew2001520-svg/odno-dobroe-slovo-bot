@@ -58,15 +58,16 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-achievements-v1"
+BOT_VERSION = "2026.10.07-live-community-v1"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
     kb.row("❤️ Мне нужно одно доброе слово")
     kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
     kb.row("🌱 Мой маленький шаг", "🌙 Письмо в тишину")
-    kb.row("🏡 Моё пространство", "🌅 Добро дня")
-    kb.row("💬 Доброе слово", "❤️ Одно доброе слово")
+    kb.row("🏡 Моё пространство", "🌍 Добро прямо сейчас")
+    kb.row("🌅 Добро дня", "💬 Доброе слово")
+    kb.row("❤️ Одно доброе слово")
     return kb
 
 def quote_buttons():
@@ -1473,6 +1474,92 @@ def letter_action(c):
     letters.append({"user_id": c.from_user.id, "chat_id": c.message.chat.id, "text": text, "created": datetime.utcnow().isoformat(timespec="seconds"), "due": due.isoformat(timespec="seconds"), "status": "waiting"})
     save_json_list(LETTERS_FILE, letters)
     bot.send_message(c.message.chat.id, f"⏳ Хорошо. Я верну тебе это письмо через <b>{days}</b> дн.\n\nДо этого момента оно хранится только для доставки обратно в этот чат.", parse_mode="HTML", reply_markup=keyboard())
+
+# 🌍 Живое сообщество добра — только агрегированная анонимная статистика.
+def _parse_iso_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+def live_kindness_stats():
+    kindness = kindness_records()
+    steps = _step_records()
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    sent_today = sum(1 for x in kindness if str(x.get("created", "")).startswith(today))
+    steps_today = sum(1 for x in steps if x.get("status") == "done" and x.get("completed_date") == today)
+
+    participants = set()
+    for x in kindness:
+        uid = x.get("user_id")
+        if uid is not None:
+            participants.add(str(uid))
+        for receiver in x.get("delivered_to", []) or []:
+            participants.add(str(receiver))
+
+    deliveries = sum(len(set(x.get("delivered_to", []) or [])) for x in kindness)
+    return {
+        "sent_today": sent_today,
+        "steps_today": steps_today,
+        "participants": len(participants),
+        "total_words": len(kindness),
+        "deliveries": deliveries,
+    }
+
+def live_activity_lines(limit=5):
+    items = []
+    for x in kindness_records():
+        created = _parse_iso_dt(x.get("created"))
+        if created:
+            items.append((created, "💌 Кто-то передал доброе слово"))
+    for x in _step_records():
+        if x.get("status") != "done":
+            continue
+        completed = _parse_iso_dt(x.get("completed"))
+        if completed:
+            items.append((completed, "🌱 Кто-то выполнил маленький шаг"))
+    items.sort(key=lambda item: item[0], reverse=True)
+    return [text for _, text in items[:limit]]
+
+def live_community_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(types.InlineKeyboardButton("🔄 Обновить", callback_data="live_refresh"),
+           types.InlineKeyboardButton("💌 Передать добро", callback_data="kindness_write"))
+    kb.add(types.InlineKeyboardButton("❤️ Получить доброе слово", callback_data="kindness_receive"))
+    return kb
+
+def live_community_text():
+    stats = live_kindness_stats()
+    activity = live_activity_lines()
+    recent = "\n".join("• " + x for x in activity) if activity else "• Здесь скоро появятся первые добрые события ❤️"
+    return (
+        "🌍 <b>Добро прямо сейчас</b>\n\n"
+        "Здесь нет имён, профилей и рейтинга людей — только реальные анонимные действия сообщества.\n\n"
+        f"💌 Добрых слов передано сегодня: <b>{stats['sent_today']}</b>\n"
+        f"🌱 Маленьких шагов выполнено сегодня: <b>{stats['steps_today']}</b>\n"
+        f"❤️ Людей в цепочке добра: <b>{stats['participants']}</b>\n"
+        f"✉️ Всего слов в цепочке: <b>{stats['total_words']}</b>\n"
+        f"🤲 Получений добрых слов: <b>{stats['deliveries']}</b>\n\n"
+        "✨ <b>Последние события</b>\n" + recent +
+        "\n\nКаждое число здесь складывается из настоящих действий пользователей бота."
+    )
+
+@bot.message_handler(func=lambda m: m.text == "🌍 Добро прямо сейчас")
+def live_community(message):
+    remember_user(message)
+    bot.send_message(message.chat.id, live_community_text(), parse_mode="HTML", reply_markup=live_community_keyboard())
+
+@bot.callback_query_handler(func=lambda c: c.data == "live_refresh")
+def live_community_refresh(c):
+    bot.answer_callback_query(c.id, "Обновлено ❤️")
+    try:
+        bot.edit_message_text(live_community_text(), c.message.chat.id, c.message.message_id,
+                              parse_mode="HTML", reply_markup=live_community_keyboard())
+    except Exception:
+        bot.send_message(c.message.chat.id, live_community_text(), parse_mode="HTML", reply_markup=live_community_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "🏡 Моё пространство")
 def my_space(message):
