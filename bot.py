@@ -46,6 +46,7 @@ def cabinet_make_session(user_id):
 
         return int(user_id)
     except Exception:
+        
         return None
 SUBS_FILE = "daily_subscribers.json"
 BANNERS_FILE = "banners.json"
