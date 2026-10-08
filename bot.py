@@ -2007,6 +2007,60 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/shop/order":
+            # Only accept requests from the project's website (browser origin check).
+            if self.headers.get("Origin") != SITE_URL:
+                self._send_json(403, {"ok": False, "error": "origin_not_allowed"})
+                return
+            # Require JSON and bound request size in _json_body.
+            if "application/json" not in self.headers.get("Content-Type", ""):
+                self._send_json(415, {"ok": False, "error": "json_required"})
+                return
+            data = self._json_body()
+            if not isinstance(data, dict):
+                self._send_json(400, {"ok": False, "error": "invalid_data"})
+                return
+            # A hidden honeypot helps filter unsophisticated spam.
+            if data.get("website"):
+                self._send_json(200, {"ok": True})
+                return
+            name = str(data.get("name", "")).strip()
+            phone = str(data.get("phone", "")).strip()
+            delivery = str(data.get("delivery", "")).strip()
+            city = str(data.get("city", "")).strip()
+            comment = str(data.get("comment", "")).strip()
+            try:
+                quantity = int(data.get("quantity", 0))
+            except (ValueError, TypeError):
+                quantity = 0
+            allowed = ("СДЭК", "Почта России", "Самовывоз (бесплатно)")
+            digits = ''.join(c for c in phone if c.isdigit())
+            if (not 2 <= len(name) <= 80 or not 10 <= len(digits) <= 15
+                or delivery not in allowed or not 1 <= quantity <= 20
+                or len(comment) > 350 or (delivery != allowed[2] and not 2 <= len(city) <= 100)):
+                self._send_json(400, {"ok": False, "error": "invalid_fields"})
+                return
+            if delivery == allowed[2]:
+                city = "Ростов-на-Дону"
+            order_id = "ODS-" + datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+            message = ("🛍 <b>НОВЫЙ ЗАКАЗ</b> " + html.escape(order_id) + "\n\n"
+                       "🎁 Коробочка тепла\n"
+                       "📦 Количество: " + str(quantity) + "\n"
+                       "💰 Товары: " + str(quantity * 1990) + " ₽ (без доставки)\n"
+                       "🚚 Получение: " + html.escape(delivery) + "\n"
+                       "📍 Город: " + html.escape(city) + "\n"
+                       "👤 Имя: " + html.escape(name) + "\n"
+                       "📞 Телефон: " + html.escape(phone) + "\n"
+                       "💬 Комментарий: " + html.escape(comment or "—") + "\n\n"
+                       "⏳ Ожидает подтверждения. Оплата не проведена.")
+            try:
+                bot.send_message(ADMIN_ID, message, parse_mode="HTML")
+            except Exception as exc:
+                print("Shop order delivery error:", type(exc).__name__)
+                self._send_json(503, {"ok": False, "error": "delivery_failed"})
+                return
+            self._send_json(200, {"ok": True, "order_id": order_id})
+            return
         if path == "/api/auth/telegram":
             data = self._json_body()
             uid = verify_telegram_login(data)
