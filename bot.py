@@ -152,19 +152,57 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.07-cabinet-v1"
+BOT_VERSION = "2026.10.08-three-sections"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
-    kb.row("❤️ Мне нужно одно доброе слово")
-    kb.row("💌 Передать добро", "🫂 Мне нужно выговориться")
-    kb.row("🌱 Мой маленький шаг", "🌙 Письмо в тишину")
-    kb.row("🏡 Моё пространство", "🌍 Добро прямо сейчас")
-    kb.row("🌍 Живая сеть добра")
-    kb.row("📍 Карта добра")
-    kb.row("🌅 Добро дня", "💬 Доброе слово")
-    kb.row("❤️ Одно доброе слово")
+    kb.row("🏙️ Проект «Добрые баннеры»")
+    kb.row("🫂 Проект «Поддержка»")
+    kb.row("🛍️ Наш магазин")
     return kb
+
+# Разделы главного меню: прежние обработчики и функции остаются доступными.
+@bot.message_handler(func=lambda m: m.text == "🏙️ Проект «Добрые баннеры»")
+def banner_section(message):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for label, callback in [("📸 Наши баннеры","section_banners"),("🎯 Следующий баннер","section_next"),("🗳 Выбрать фразу","section_vote"),("📊 Отчёты","section_reports"),("❤️ Поддержать размещение","section_donate"),("✍️ Предложить фразу","section_phrase")]:
+        kb.add(types.InlineKeyboardButton(label, callback_data=callback))
+    bot.send_message(message.chat.id,"🏙️ <b>Добрые баннеры</b>\n\nСлова поддержки на улицах городов. Выберите действие:",parse_mode="HTML",reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "🫂 Проект «Поддержка»")
+def support_section(message):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for label, callback in [("❤️ Получить доброе слово","section_word"),("💌 Передать добро","section_pass"),("🫂 Выговориться","section_talk"),("🌱 Маленький шаг","section_step"),("🌙 Письмо в тишину","section_letter"),("🏡 Моё пространство","section_space"),("🌅 Добро дня","section_daily"),("🌍 Сеть добра","section_network"),("📍 Карта добра","section_map")]:
+        kb.add(types.InlineKeyboardButton(label, callback_data=callback))
+    bot.send_message(message.chat.id,"🫂 <b>Проект поддержки</b>\n\nЗдесь можно получить доброе слово и поделиться им.",parse_mode="HTML",reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "🛍️ Наш магазин")
+def shop_section(message):
+    kb=types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🛍️ Открыть магазин",url="https://odnodobroeslovo.ru/shop/"))
+    bot.send_message(message.chat.id,"🎁 <b>Магазин тёплых подарков</b>\n\nПодарки, в которых есть забота.",parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("section_"))
+def section_action(c):
+    mapping={"section_banners":"📸 Наши баннеры","section_next":"🎯 Следующий баннер","section_vote":"🗳 Выбрать фразу","section_reports":"📊 Отчёты","section_donate":"❤️ Поддержать проект","section_phrase":"✍️ Предложить фразу","section_word":"❤️ Мне нужно одно доброе слово","section_pass":"💌 Передать добро","section_talk":"🫂 Мне нужно выговориться","section_step":"🌱 Мой маленький шаг","section_letter":"🌙 Письмо в тишину","section_space":"🏡 Моё пространство","section_daily":"🌅 Добро дня","section_network":"🌍 Живая сеть добра","section_map":"📍 Карта добра"}
+    target=mapping.get(c.data)
+    if not target: return
+    try: bot.answer_callback_query(c.id)
+    except Exception: pass
+    # Передаём выбранный пункт прежним обработчикам, не меняя их логику.
+    msg=c.message
+    msg.text=target
+    msg.from_user=c.from_user
+    # Вызов зарегистрированного обработчика по его текстовому фильтру.
+    for handler in bot.message_handlers:
+        filters=handler.get("filters",{})
+        if "func" not in filters: continue
+        try:
+            if filters["func"](msg):
+                handler["function"](msg)
+                return
+        except Exception: continue
+    bot.send_message(c.message.chat.id,"Функция временно недоступна. Попробуйте позже.")
 
 def quote_buttons():
     kb = types.InlineKeyboardMarkup()
