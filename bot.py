@@ -1,4 +1,4 @@
-import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64
+import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64, uuid
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1970,6 +1970,69 @@ def public_stats_payload():
         "placements": [{"city": x.get("city", ""), "date": x.get("date", ""), "phrase": x.get("phrase", "")} for x in banners_data[-12:]],
     }
 
+# Магазин: журнал заявок хранится на диске Railway. Для постоянного хранения
+# подключите volume или внешнюю БД. Без этого записи могут пропасть при redeploy.
+SHOP_FILE = os.environ.get("SHOP_ORDERS_FILE", "shop_orders.json")
+SHOP_LOCK = threading.RLock()
+SHOP_STATUSES = {"new": "Новый", "work": "В работе", "sent": "Отправлен", "done": "Завершён", "cancel": "Отменён"}
+
+def shop_load():
+    try:
+        with open(SHOP_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+def shop_save(items):
+    temp = SHOP_FILE + ".tmp"
+    with open(temp, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    os.replace(temp, SHOP_FILE)
+
+def shop_buttons(order_id):
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    for key, label in SHOP_STATUSES.items():
+        keyboard.add(types.InlineKeyboardButton(label, callback_data="shopstatus:" + key + ":" + order_id))
+    return keyboard
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("shopstatus:"))
+def shop_change_status(c):
+    if not c.from_user or c.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(c.id, "Недоступно")
+        return
+    try:
+        _, status, order_id = c.data.split(":", 2)
+        if status not in SHOP_STATUSES:
+            raise ValueError()
+        with SHOP_LOCK:
+            items = shop_load()
+            order = next((x for x in items if x.get("id") == order_id), None)
+            if not order:
+                bot.answer_callback_query(c.id, "Заказ не найден в журнале")
+                return
+            order["status"] = status
+            shop_save(items)
+        bot.answer_callback_query(c.id, "Статус: " + SHOP_STATUSES[status])
+        bot.send_message(ADMIN_ID, "📦 Заказ " + order_id + " → " + SHOP_STATUSES[status])
+    except Exception:
+        bot.answer_callback_query(c.id, "Не удалось обновить")
+
+@bot.message_handler(commands=["shopstats", "shoporders"])
+def shop_admin_commands(m):
+    if not m.from_user or m.from_user.id != ADMIN_ID:
+        return
+    with SHOP_LOCK:
+        items = shop_load()
+    if m.text.startswith("/shopstats"):
+        total = sum(int(x.get("total", 0)) for x in items if x.get("status") != "cancel")
+        statuses = "\n".join(f"{label}: {sum(x.get('status') == key for x in items)}" for key, label in SHOP_STATUSES.items())
+        bot.send_message(m.chat.id, f"📊 Заявок: {len(items)}\nПотенциальная сумма (не выручка): {total:,} ₽\n\n{statuses}")
+    else:
+        recent = items[-10:][::-1]
+        lines = [f"{x['id']} — {SHOP_STATUSES.get(x.get('status'), '—')} — {x.get('total', 0)} ₽" for x in recent]
+        bot.send_message(m.chat.id, "📦 Последние заявки:\n" + ("\n".join(lines) if lines else "Пока нет"))
+
 class PublicStatsHandler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2042,7 +2105,7 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                 return
             if delivery == allowed[2]:
                 city = "Ростов-на-Дону"
-            order_id = "ODS-" + datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+            order_id = "ODS-" + uuid.uuid4().hex[:10].upper()
             message = ("🛍 <b>НОВЫЙ ЗАКАЗ</b> " + html.escape(order_id) + "\n\n"
                        "🎁 Коробочка тепла\n"
                        "📦 Количество: " + str(quantity) + "\n"
@@ -2054,7 +2117,11 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                        "💬 Комментарий: " + html.escape(comment or "—") + "\n\n"
                        "⏳ Ожидает подтверждения. Оплата не проведена.")
             try:
-                bot.send_message(ADMIN_ID, message, parse_mode="HTML")
+                bot.send_message(ADMIN_ID, message, parse_mode="HTML", reply_markup=shop_buttons(order_id))
+                with SHOP_LOCK:
+                    items = shop_load()
+                    items.append({"id": order_id, "created": datetime.utcnow().isoformat() + "Z", "status": "new", "name": name, "phone": phone, "delivery": delivery, "city": city, "comment": comment, "quantity": quantity, "total": quantity * 1990})
+                    shop_save(items)
             except Exception as exc:
                 print("Shop order delivery error:", type(exc).__name__)
                 self._send_json(503, {"ok": False, "error": "delivery_failed"})
@@ -2077,7 +2144,11 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
-        if path == "/api/stats":
+        if path == "/api/shop/public":
+            with SHOP_LOCK:
+                items = shop_load()
+            self._send_json(200, {"ok": True, "orders": len(items)})
+        elif path == "/api/stats":
             self._send_json(200, public_stats_payload())
         elif path == "/api/me":
             uid = self._session_uid()
