@@ -2068,8 +2068,38 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
+    def _shop_admin_ok(self):
+        return self._session_uid() == ADMIN_ID and self.headers.get("Origin") == SITE_URL
+
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/admin/shop/status":
+            if not self._shop_admin_ok():
+                self._send_json(403, {"ok": False, "error": "forbidden"})
+                return
+            data = self._json_body()
+            if not isinstance(data, dict):
+                self._send_json(400, {"ok": False})
+                return
+            order_id = str(data.get("order_id", ""))
+            status = str(data.get("status", ""))
+            if status not in SHOP_STATUSES:
+                self._send_json(400, {"ok": False, "error": "bad_status"})
+                return
+            with SHOP_LOCK:
+                items = shop_load()
+                order = next((x for x in items if x.get("id") == order_id), None)
+                if order is None:
+                    self._send_json(404, {"ok": False, "error": "not_found"})
+                    return
+                order["status"] = status
+                try:
+                    shop_save(items)
+                except OSError:
+                    self._send_json(503, {"ok": False, "error": "storage_error"})
+                    return
+            self._send_json(200, {"ok": True})
+            return
         if path == "/api/shop/order":
             # Only accept requests from the project's website (browser origin check).
             if self.headers.get("Origin") != SITE_URL:
@@ -2144,6 +2174,17 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/admin/shop/orders":
+            if not self._shop_admin_ok():
+                self._send_json(403, {"ok": False, "error": "forbidden"})
+                return
+            with SHOP_LOCK:
+                items = shop_load()
+            total = sum(int(x.get("total", 0)) for x in items if x.get("status") != "cancel")
+            self._send_json(200, {"ok": True, "orders": items[-300:][::-1],
+                                  "stats": {"count": len(items), "amount": total,
+                                            "new": sum(x.get("status") == "new" for x in items)}})
+            return
         if path == "/api/shop/public":
             with SHOP_LOCK:
                 items = shop_load()
