@@ -329,6 +329,11 @@ def remember_user(message):
 @bot.message_handler(commands=["start"])
 def start(message):
     remember_user(message)
+    # Покупатель добровольно связывает свой Telegram с уже созданным заказом.
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) == 2 and parts[1].startswith("order_"):
+        shop_connect_buyer(message, parts[1][6:])
+        return
     bot.send_message(message.chat.id, "❤️ <b>Одно доброе слово</b>\n\nЗдесь можно получить настоящее доброе слово от незнакомого человека, оставить своё следующему, выговориться или просто найти немного поддержки.\n\nВыберите, что вам сейчас нужно 👇", parse_mode="HTML", reply_markup=keyboard())
 
 @bot.message_handler(commands=["menu"])
@@ -2063,11 +2068,80 @@ def shop_save(items):
         json.dump(items, f, ensure_ascii=False, indent=2)
     os.replace(temp, SHOP_FILE)
 
-def shop_buttons(order_id):
+def shop_buttons(order_id, buyer_connected=False):
     keyboard = types.InlineKeyboardMarkup(row_width=2)
+    if buyer_connected:
+        keyboard.add(types.InlineKeyboardButton("💬 Ответить покупателю", callback_data="shopreply:" + order_id))
     for key, label in SHOP_STATUSES.items():
         keyboard.add(types.InlineKeyboardButton(label, callback_data="shopstatus:" + key + ":" + order_id))
     return keyboard
+
+
+def shop_connect_buyer(message, order_id):
+    """Покупатель сам запускает бота по ссылке из своего заказа."""
+    if not message.from_user or message.chat.type != "private":
+        return
+    with SHOP_LOCK:
+        items = shop_load()
+        order = next((x for x in items if x.get("id") == order_id), None)
+        if not order:
+            bot.send_message(message.chat.id, "Заказ не найден. Проверь ссылку или напиши продавцу: " + SUPPORT_TELEGRAM_URL)
+            return
+        old_uid = order.get("buyer_telegram_id")
+        if old_uid and old_uid != message.from_user.id:
+            bot.send_message(message.chat.id, "Этот заказ уже связан с другим Telegram-аккаунтом. Обратись к продавцу: " + SUPPORT_TELEGRAM_URL)
+            return
+        order["buyer_telegram_id"] = message.from_user.id
+        order["buyer_username"] = message.from_user.username or ""
+        try:
+            shop_save(items)
+        except OSError:
+            bot.send_message(message.chat.id, "Не удалось сохранить связь. Попробуй позже.")
+            return
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💬 Написать продавцу", url=SUPPORT_TELEGRAM_URL))
+    bot.send_message(message.chat.id, "❤️ Заказ " + order_id + " найден! Продавец свяжется с тобой после проверки наличия и доставки. Оплачивать пока ничего не нужно.", reply_markup=kb)
+    if old_uid != message.from_user.id:
+        bot.send_message(ADMIN_ID,
+            "💬 Покупатель заказа <b>" + html.escape(order_id) + "</b> открыл чат с ботом. Теперь можно ответить ему через бота.",
+            parse_mode="HTML", reply_markup=shop_buttons(order_id, buyer_connected=True))
+
+
+@bot.callback_query_handler(func=lambda c: bool(c.data) and c.data.startswith("shopreply:"))
+def shop_reply_click(c):
+    if not c.from_user or c.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(c.id, "Недоступно")
+        return
+    order_id = c.data[len("shopreply:"):]
+    with SHOP_LOCK:
+        order = next((x for x in shop_load() if x.get("id") == order_id), None)
+    if not order or not order.get("buyer_telegram_id"):
+        bot.answer_callback_query(c.id, "Покупатель ещё не подключился")
+        return
+    bot.answer_callback_query(c.id)
+    prompt = bot.send_message(ADMIN_ID, "✉️ Напиши ответ покупателю заказа " + order_id + " одним текстовым сообщением. Для отмены отправь /cancelreply.")
+    bot.register_next_step_handler(prompt, shop_send_reply, order_id)
+
+
+def shop_send_reply(message, order_id):
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+    if (message.text or "").strip() == "/cancelreply":
+        bot.send_message(ADMIN_ID, "Ответ отменён.")
+        return
+    if not message.text or len(message.text) > 3500:
+        bot.send_message(ADMIN_ID, "Отправь текст до 3500 символов. Ответ не отправлен.")
+        return
+    with SHOP_LOCK:
+        order = next((x for x in shop_load() if x.get("id") == order_id), None)
+    if not order or not order.get("buyer_telegram_id"):
+        bot.send_message(ADMIN_ID, "Покупатель не найден. Ответ не отправлен.")
+        return
+    try:
+        bot.send_message(order["buyer_telegram_id"], "📦 <b>Сообщение по заказу " + html.escape(order_id) + "</b>\n\n" + html.escape(message.text), parse_mode="HTML")
+        bot.send_message(ADMIN_ID, "✅ Сообщение покупателю отправлено.")
+    except Exception:
+        bot.send_message(ADMIN_ID, "❌ Не удалось доставить сообщение. Возможно, покупатель заблокировал бота.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("shopstatus:"))
 def shop_change_status(c):
@@ -2280,7 +2354,8 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                 print("Shop order delivery error:", type(exc).__name__)
                 self._send_json(503, {"ok": False, "error": "delivery_failed"})
                 return
-            self._send_json(200, {"ok": True, "order_id": order_id})
+            self._send_json(200, {"ok": True, "order_id": order_id,
+                                  "contact_url": "https://t.me/odno_dobroe_slovo_bot?start=order_" + order_id})
             return
         if path == "/api/auth/telegram":
             data = self._json_body()
