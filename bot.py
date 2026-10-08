@@ -1,6 +1,6 @@
 import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64, uuid, re
 from datetime import datetime
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, parse_qsl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import telebot
 from telebot import types
@@ -76,6 +76,30 @@ def verify_telegram_login(data):
             return None
         return int(data["id"])
     except Exception:
+        return None
+
+def verify_telegram_webapp_init_data(raw):
+    """Verify Telegram Mini App initData HMAC and 24h freshness."""
+    try:
+        if not isinstance(raw, str) or not 20 <= len(raw) <= 8192:
+            return None
+        fields = dict(parse_qsl(raw, keep_blank_values=True, strict_parsing=True))
+        signature = fields.pop("hash", "")
+        if len(signature) != 64 or not re.fullmatch(r"[a-fA-F0-9]{64}", signature):
+            return None
+        auth_date = int(fields.get("auth_date", "0"))
+        now = int(time.time())
+        if auth_date > now + 60 or now - auth_date > 86400:
+            return None
+        check = "\n".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        secret = hmac.new(b"WebAppData", TOKEN.encode("utf-8"), hashlib.sha256).digest()
+        expected = hmac.new(secret, check.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature.lower(), expected):
+            return None
+        user = json.loads(fields.get("user", "{}"))
+        uid = int(user.get("id", 0))
+        return uid if uid > 0 else None
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         return None
 
 def cabinet_profile_payload(uid):
@@ -2371,6 +2395,14 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "order_id": order_id,
                                   "contact_url": "https://t.me/odno_dobroe_slovo_bot?start=order_" + order_id})
             return
+        if path == "/api/miniapp/auth":
+            if self.headers.get("Origin") != SITE_URL:
+                self._send_json(403, {"ok": False, "error": "origin_not_allowed"}); return
+            data = self._json_body()
+            uid = verify_telegram_webapp_init_data(data.get("initData")) if isinstance(data, dict) else None
+            if not uid:
+                self._send_json(401, {"ok": False, "error": "telegram_auth_failed"}); return
+            self._send_json(200, {"ok": True, "token": cabinet_make_session(uid)}); return
         if path == "/api/auth/telegram":
             data = self._json_body()
             uid = verify_telegram_login(data)
@@ -2397,6 +2429,20 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
         if path == "/api/shop/products":
             with PRODUCTS_LOCK: items=products_load()
             self._send_json(200,{"ok":True,"products":[x for x in items if x.get("visible") and x.get("stock",0)>0]}); return
+        if path == "/api/miniapp/my-orders":
+            if self.headers.get("Origin") != SITE_URL:
+                self._send_json(403, {"ok": False, "error": "origin_not_allowed"}); return
+            uid = self._session_uid()
+            if not uid:
+                self._send_json(401, {"ok": False, "error": "unauthorized"}); return
+            with SHOP_LOCK:
+                orders = [x for x in shop_load() if str(x.get("buyer_telegram_id", "")) == str(uid)]
+            public_orders = [{"id": x.get("id"), "created": x.get("created"),
+                "status": x.get("status", "new"), "status_label": SHOP_STATUSES.get(x.get("status"), "Новый"),
+                "items": x.get("items", []), "total": x.get("total", 0),
+                "delivery": x.get("delivery", ""), "city": x.get("city", "")}
+                for x in orders[-100:][::-1]]
+            self._send_json(200, {"ok": True, "orders": public_orders}); return
         if path == "/api/admin/shop/orders":
             if not self._shop_admin_ok():
                 self._send_json(403, {"ok": False, "error": "forbidden"})
