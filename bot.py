@@ -2021,13 +2021,27 @@ SHOP_STATUSES = {"new": "Новый", "work": "В работе", "sent": "Отп
 # Товары хранятся в локальном JSON (Railway ephemeral filesystem).
 PRODUCTS_FILE = os.environ.get("SHOP_PRODUCTS_FILE", "shop_products.json")
 PRODUCTS_LOCK = threading.RLock()
-DEFAULT_PRODUCTS = [{"id":"box-warmth","name":"Коробочка тепла","description":"Маленький мир добрых слов, который можно подарить близкому человеку или самому себе.","price":1990,"stock":100,"visible":True,"image":"","details":"30 карточек с добрыми словами; 5 писем в конвертах; Браслет с сердечком; Открытка и подарочная упаковка"}]
+DEFAULT_PRODUCTS = [{'id': 'box-warmth', 'name': 'Коробочка тепла', 'description': '30 карточек, 5 писем, открытка и браслет.', 'price': 1999, 'stock': 100, 'visible': True, 'image': '', 'details': '30 карточек; 5 писем; открытка; браслет'}, {'id': 'kind-cards', 'name': 'Карточки с добрыми словами (30 шт.)', 'description': '30 добрых посланий на каждый день.', 'price': 499, 'stock': 100, 'visible': True, 'image': '', 'details': '30 карточек'}, {'id': 'support-letters', 'name': 'Письма поддержки (5 шт.)', 'description': 'Пять писем в отдельных конвертах.', 'price': 199, 'stock': 100, 'visible': True, 'image': '', 'details': '5 писем'}, {'id': 'heart-bracelet', 'name': 'Браслет с сердечком', 'description': 'Символ заботы и внимания.', 'price': 99, 'stock': 100, 'visible': True, 'image': '', 'details': 'Браслет с сердечком'}]
 
 def products_load():
     try:
         with open(PRODUCTS_FILE, encoding="utf-8") as f:
             items=json.load(f)
-        if isinstance(items,list): return items
+        if isinstance(items,list):
+            defaults = {x["id"]: x for x in DEFAULT_PRODUCTS}
+            seen = set()
+            merged = []
+            for product in items:
+                if not isinstance(product, dict):
+                    continue
+                pid = product.get("id")
+                if pid in defaults:
+                    # The four announced product prices are authoritative; retain stock and custom images.
+                    product = {**product, "name": defaults[pid]["name"], "price": defaults[pid]["price"]}
+                merged.append(product)
+                seen.add(pid)
+            merged.extend(dict(x) for x in DEFAULT_PRODUCTS if x["id"] not in seen)
+            return merged
     except (OSError,ValueError): pass
     return [dict(x) for x in DEFAULT_PRODUCTS]
 
