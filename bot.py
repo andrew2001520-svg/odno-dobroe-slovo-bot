@@ -2165,7 +2165,9 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {"ok": False, "error": "telegram_auth_failed"})
                 return
             user = next((x for x in users_data if str(x.get("id")) == str(uid)), None)
-            if not user:
+            # The store administrator may not be present in the bot's users list.
+            # Telegram's signed login payload has already been verified above.
+            if not user and uid != ADMIN_ID:
                 self._send_json(403, {"ok": False, "error": "open_bot_first"})
                 return
             self._send_json(200, {"ok": True, "token": cabinet_make_session(uid)})
