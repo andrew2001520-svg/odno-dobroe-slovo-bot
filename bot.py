@@ -1,4 +1,4 @@
-import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64, uuid
+import os, random, html, json, threading, time, zipfile, hashlib, hmac, base64, uuid, re
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1975,6 +1975,41 @@ def public_stats_payload():
 SHOP_FILE = os.environ.get("SHOP_ORDERS_FILE", "shop_orders.json")
 SHOP_LOCK = threading.RLock()
 SHOP_STATUSES = {"new": "Новый", "work": "В работе", "sent": "Отправлен", "done": "Завершён", "cancel": "Отменён"}
+# Товары хранятся в локальном JSON (Railway ephemeral filesystem).
+PRODUCTS_FILE = os.environ.get("SHOP_PRODUCTS_FILE", "shop_products.json")
+PRODUCTS_LOCK = threading.RLock()
+DEFAULT_PRODUCTS = [{"id":"box-warmth","name":"Коробочка тепла","description":"Маленький мир добрых слов, который можно подарить близкому человеку или самому себе.","price":1990,"stock":100,"visible":True,"image":"","details":"30 карточек с добрыми словами; 5 писем в конвертах; Браслет с сердечком; Открытка и подарочная упаковка"}]
+
+def products_load():
+    try:
+        with open(PRODUCTS_FILE, encoding="utf-8") as f:
+            items=json.load(f)
+        if isinstance(items,list): return items
+    except (OSError,ValueError): pass
+    return [dict(x) for x in DEFAULT_PRODUCTS]
+
+def products_save(items):
+    temp=PRODUCTS_FILE+".tmp"
+    with open(temp,"w",encoding="utf-8") as f: json.dump(items,f,ensure_ascii=False,indent=2)
+    os.replace(temp,PRODUCTS_FILE)
+
+def clean_product(raw, existing=None):
+    if not isinstance(raw,dict): return None
+    name=str(raw.get("name", "")).strip()[:100]
+    description=str(raw.get("description", "")).strip()[:1000]
+    details=str(raw.get("details", "")).strip()[:1500]
+    try:
+        price=int(raw.get("price",0)); stock=int(raw.get("stock",0))
+    except (TypeError,ValueError): return None
+    if not name or not (1<=price<=10000000) or not (0<=stock<=100000): return None
+    image=str(raw.get("image", ""))
+    # Разрешены только безопасные изображения data URL, не SVG/HTML.
+    if image and (len(image)>900000 or not re.match(r'^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$',image)):
+        return None
+    return {"id": existing["id"] if existing else "prd-"+uuid.uuid4().hex[:12],
+            "name":name,"description":description,"details":details,"price":price,"stock":stock,
+            "visible":raw.get("visible") is True,"image":image}
+
 
 def shop_load():
     try:
@@ -2046,10 +2081,10 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json_body(self):
+    def _json_body(self, max_size=65536):
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 65536:
+            if length <= 0 or length > max_size:
                 return {}
             return json.loads(self.rfile.read(length).decode("utf-8"))
         except Exception:
@@ -2073,6 +2108,37 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/admin/shop/products":
+            if not self._shop_admin_ok():
+                self._send_json(403,{"ok":False,"error":"forbidden"}); return
+            data=self._json_body(max_size=1200000)
+            if not isinstance(data,dict):
+                self._send_json(400,{"ok":False,"error":"invalid_data"}); return
+            with PRODUCTS_LOCK:
+                items=products_load()
+                old=next((x for x in items if x["id"]==str(data.get("id", ""))),None)
+                item=clean_product(data,old)
+                if not item:
+                    self._send_json(400,{"ok":False,"error":"invalid_product"}); return
+                if old: items[items.index(old)]=item
+                else: items.append(item)
+                try: products_save(items)
+                except OSError:
+                    self._send_json(503,{"ok":False,"error":"storage_error"}); return
+            self._send_json(200,{"ok":True,"product":item}); return
+        if path == "/api/admin/shop/product/delete":
+            if not self._shop_admin_ok():
+                self._send_json(403,{"ok":False,"error":"forbidden"}); return
+            data=self._json_body()
+            if not isinstance(data,dict):
+                self._send_json(400,{"ok":False}); return
+            with PRODUCTS_LOCK:
+                items=products_load()
+                items=[x for x in items if x["id"]!=str(data.get("id",""))]
+                try: products_save(items)
+                except OSError:
+                    self._send_json(503,{"ok":False,"error":"storage_error"}); return
+            self._send_json(200,{"ok":True}); return
         if path == "/api/admin/shop/status":
             if not self._shop_admin_ok():
                 self._send_json(403, {"ok": False, "error": "forbidden"})
@@ -2122,14 +2188,34 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
             delivery = str(data.get("delivery", "")).strip()
             city = str(data.get("city", "")).strip()
             comment = str(data.get("comment", "")).strip()
-            try:
-                quantity = int(data.get("quantity", 0))
-            except (ValueError, TypeError):
-                quantity = 0
+            raw_items=data.get("items")
+            order_lines=[]
+            if isinstance(raw_items,list) and 1<=len(raw_items)<=30:
+                with PRODUCTS_LOCK:
+                    catalog={x["id"]:x for x in products_load()}
+                seen=set()
+                for line in raw_items:
+                    if not isinstance(line,dict): break
+                    product=catalog.get(str(line.get("id","")))
+                    try: qty=int(line.get("quantity",0))
+                    except (ValueError,TypeError): break
+                    if not product or not product.get("visible") or not 1<=qty<=20 or product["stock"]<qty or product["id"] in seen: break
+                    seen.add(product["id"])
+                    order_lines.append({"id":product["id"],"name":product["name"],"quantity":qty,"price":product["price"]})
+                if len(order_lines)!=len(raw_items): order_lines=[]
+            elif raw_items is None:
+                try: quantity=int(data.get("quantity",0))
+                except (ValueError,TypeError): quantity=0
+                if 1<=quantity<=20:
+                    with PRODUCTS_LOCK: base=next((x for x in products_load() if x["id"]=="box-warmth"),None)
+                    if base and base["visible"] and base["stock"]>=quantity:
+                        order_lines=[{"id":base["id"],"name":base["name"],"quantity":quantity,"price":base["price"]}]
+            quantity=sum(x["quantity"] for x in order_lines)
+            order_total=sum(x["quantity"]*x["price"] for x in order_lines)
             allowed = ("СДЭК", "Почта России", "Самовывоз (бесплатно)")
             digits = ''.join(c for c in phone if c.isdigit())
             if (not 2 <= len(name) <= 80 or not 10 <= len(digits) <= 15
-                or delivery not in allowed or not 1 <= quantity <= 20
+                or delivery not in allowed or not order_lines or quantity > 50
                 or len(comment) > 350 or (delivery != allowed[2] and not 2 <= len(city) <= 100)):
                 self._send_json(400, {"ok": False, "error": "invalid_fields"})
                 return
@@ -2137,9 +2223,9 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                 city = "Ростов-на-Дону"
             order_id = "ODS-" + uuid.uuid4().hex[:10].upper()
             message = ("🛍 <b>НОВЫЙ ЗАКАЗ</b> " + html.escape(order_id) + "\n\n"
-                       "🎁 Коробочка тепла\n"
-                       "📦 Количество: " + str(quantity) + "\n"
-                       "💰 Товары: " + str(quantity * 1990) + " ₽ (без доставки)\n"
+                       "🎁 " + "; ".join(html.escape(x["name"])+" × "+str(x["quantity"]) for x in order_lines) + "\n"
+                       "📦 Всего штук: " + str(quantity) + "\n"
+                       "💰 Товары: " + str(order_total) + " ₽ (без доставки)\n"
                        "🚚 Получение: " + html.escape(delivery) + "\n"
                        "📍 Город: " + html.escape(city) + "\n"
                        "👤 Имя: " + html.escape(name) + "\n"
@@ -2150,7 +2236,7 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
                 bot.send_message(ADMIN_ID, message, parse_mode="HTML", reply_markup=shop_buttons(order_id))
                 with SHOP_LOCK:
                     items = shop_load()
-                    items.append({"id": order_id, "created": datetime.utcnow().isoformat() + "Z", "status": "new", "name": name, "phone": phone, "delivery": delivery, "city": city, "comment": comment, "quantity": quantity, "total": quantity * 1990})
+                    items.append({"id": order_id, "created": datetime.utcnow().isoformat() + "Z", "status": "new", "name": name, "phone": phone, "delivery": delivery, "city": city, "comment": comment, "quantity": quantity, "total": order_total, "items": order_lines})
                     shop_save(items)
             except Exception as exc:
                 print("Shop order delivery error:", type(exc).__name__)
@@ -2176,6 +2262,14 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/admin/shop/products":
+            if not self._shop_admin_ok():
+                self._send_json(403,{"ok":False,"error":"forbidden"}); return
+            with PRODUCTS_LOCK: items=products_load()
+            self._send_json(200,{"ok":True,"products":items}); return
+        if path == "/api/shop/products":
+            with PRODUCTS_LOCK: items=products_load()
+            self._send_json(200,{"ok":True,"products":[x for x in items if x.get("visible") and x.get("stock",0)>0]}); return
         if path == "/api/admin/shop/orders":
             if not self._shop_admin_ok():
                 self._send_json(403, {"ok": False, "error": "forbidden"})
