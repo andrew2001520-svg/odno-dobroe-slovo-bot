@@ -186,9 +186,36 @@ def keyboard():
     kb.row("🌐 Наш сайт")
     kb.row("🧸 Наши стикеры")
     kb.row("❤️ Пространство доброты")
+    kb.row("💌 Тебе письмо")
     return kb
 
 # Разделы главного меню: прежние обработчики и функции остаются доступными.
+# Письма поддержки: первый этап — получение случайного письма.
+# Тексты редакционные; сообщения пользователей здесь не публикуются.
+SUPPORT_LETTERS = [
+    "Привет! ❤️\n\nЕсли сегодня всё идёт не так, как хотелось, это не делает тебя слабее. Ты можешь двигаться маленькими шагами и отдыхать, когда нужно. Ты важен.",
+    "Незнакомый друг, 💌\n\nНе сравнивай свою дорогу с чужой. У каждого свой темп. Даже небольшой шаг сегодня — уже движение вперёд.",
+    "Я хочу напомнить тебе кое-что. 🫂\n\nТы не обязан быть сильным каждую минуту. Можно попросить о помощи, выдохнуть и начать снова. Ты заслуживаешь заботы.",
+    "Пусть это письмо станет маленьким светом. ☀️\n\nВпереди ещё будут тёплые встречи, спокойные вечера и поводы улыбнуться. Береги себя.",
+    "Для тебя, кто сейчас читает эти строки. ❤️\n\nТы уже преодолел немало. Не обесценивай свой путь. Я желаю тебе доброго дня и людей, рядом с которыми спокойно.",
+    "Иногда важнее всего услышать: я рядом. 🌷\n\nПусть сегодня у тебя найдётся хотя бы одна минута для себя и одно доброе слово от близкого человека."
+]
+
+def send_support_letter(chat_id):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💌 Ещё одно письмо", callback_data="support_letter_more"))
+    kb.add(types.InlineKeyboardButton("❤️ Пространство доброты", url="https://odnodobroeslovo.ru/dobro/"))
+    bot.send_message(chat_id, "💌 <b>Письмо для тебя</b>\n\n" + html.escape(random.choice(SUPPORT_LETTERS)) + "\n\n❤️ <i>Одно доброе слово</i>", parse_mode="HTML", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "💌 Тебе письмо")
+def support_letter_message(message):
+    send_support_letter(message.chat.id)
+
+@bot.callback_query_handler(func=lambda c: c.data == "support_letter_more")
+def support_letter_more(c):
+    bot.answer_callback_query(c.id)
+    send_support_letter(c.message.chat.id)
+
 @bot.message_handler(func=lambda m: m.text == "🏙️ Проект «Добрые баннеры»")
 def banner_section(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -199,7 +226,7 @@ def banner_section(message):
 @bot.message_handler(func=lambda m: m.text == "🫂 Проект «Поддержка»")
 def support_section(message):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    for label, callback in [("❤️ Получить доброе слово","section_word"),("💌 Передать добро","section_pass"),("🫂 Выговориться","section_talk"),("🌱 Маленький шаг","section_step"),("🌙 Письмо в тишину","section_letter"),("🏡 Моё пространство","section_space"),("🌅 Добро дня","section_daily"),("🌍 Сеть добра","section_network"),("📍 Карта добра","section_map")]:
+    for label, callback in [("💌 Тебе письмо","section_support_letter"),("❤️ Получить доброе слово","section_word"),("💌 Передать добро","section_pass"),("🫂 Выговориться","section_talk"),("🌱 Маленький шаг","section_step"),("🌙 Письмо в тишину","section_letter"),("🏡 Моё пространство","section_space"),("🌅 Добро дня","section_daily"),("🌍 Сеть добра","section_network"),("📍 Карта добра","section_map")]:
         kb.add(types.InlineKeyboardButton(label, callback_data=callback))
     bot.send_message(message.chat.id,"🫂 <b>Проект поддержки</b>\n\nЗдесь можно получить доброе слово и поделиться им.",parse_mode="HTML",reply_markup=kb)
 
@@ -211,7 +238,7 @@ def shop_section(message):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("section_"))
 def section_action(c):
-    mapping={"section_banners":"📸 Наши баннеры","section_next":"🎯 Следующий баннер","section_vote":"🗳 Выбрать фразу","section_reports":"📊 Отчёты","section_donate":"❤️ Поддержать проект","section_phrase":"✍️ Предложить фразу","section_word":"❤️ Мне нужно одно доброе слово","section_pass":"💌 Передать добро","section_talk":"🫂 Мне нужно выговориться","section_step":"🌱 Мой маленький шаг","section_letter":"🌙 Письмо в тишину","section_space":"🏡 Моё пространство","section_daily":"🌅 Добро дня","section_network":"🌍 Живая сеть добра","section_map":"📍 Карта добра"}
+    mapping={"section_support_letter":"💌 Тебе письмо","section_banners":"📸 Наши баннеры","section_next":"🎯 Следующий баннер","section_vote":"🗳 Выбрать фразу","section_reports":"📊 Отчёты","section_donate":"❤️ Поддержать проект","section_phrase":"✍️ Предложить фразу","section_word":"❤️ Мне нужно одно доброе слово","section_pass":"💌 Передать добро","section_talk":"🫂 Мне нужно выговориться","section_step":"🌱 Мой маленький шаг","section_letter":"🌙 Письмо в тишину","section_space":"🏡 Моё пространство","section_daily":"🌅 Добро дня","section_network":"🌍 Живая сеть добра","section_map":"📍 Карта добра"}
     target=mapping.get(c.data)
     if not target: return
     try: bot.answer_callback_query(c.id)
