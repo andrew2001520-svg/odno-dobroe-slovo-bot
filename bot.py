@@ -185,6 +185,7 @@ def keyboard():
     kb.row("🛍️ Наш магазин")
     kb.row("🌐 Наш сайт")
     kb.row("🧸 Наши стикеры")
+    kb.row("❤️ Пространство доброты")
     return kb
 
 # Разделы главного меню: прежние обработчики и функции остаются доступными.
@@ -772,6 +773,12 @@ def pay_support(message):
 @bot.message_handler(func=lambda m: m.text == "🌿 О проекте")
 def about(message):
     bot.send_message(message.chat.id, "🌿 <b>Одно доброе слово</b>\n\nМы размещаем на улицах слова, которые ничего не продают: поддержку, надежду, любовь и напоминание ценить тех, кто рядом.\n\nИногда одна фраза может встретить человека именно тогда, когда она ему особенно нужна. ❤️", parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: m.text == "❤️ Пространство доброты")
+def dobro_space_link(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❤️ Открыть Пространство доброты", url="https://odnodobroeslovo.ru/dobro/"))
+    bot.send_message(message.chat.id, "❤️ <b>Пространство доброты</b>\n\nПисьма поддержки, добрые истории и маленькие дела, которые делают мир теплее.", parse_mode="HTML", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "🌐 Наш сайт")
 def website(message):
