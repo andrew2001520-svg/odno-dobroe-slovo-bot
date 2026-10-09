@@ -184,6 +184,7 @@ def keyboard():
     kb.row("🫂 Проект «Поддержка»")
     kb.row("🛍️ Наш магазин")
     kb.row("🌐 Наш сайт")
+    kb.row("🧸 Наши стикеры")
     return kb
 
 # Разделы главного меню: прежние обработчики и функции остаются доступными.
@@ -775,6 +776,12 @@ def about(message):
 @bot.message_handler(func=lambda m: m.text == "🌐 Наш сайт")
 def website(message):
     kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("🌐 Открыть сайт", url=SITE_URL)); bot.send_message(message.chat.id, "🌐 Сайт проекта «Одно доброе слово»", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "🧸 Наши стикеры")
+def stickers_section(message):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🧸 Добавить стикеры", url="https://t.me/addstickers/odnoslovodobra"))
+    bot.send_message(message.chat.id, "🧸❤️ Наш набор стикеров «Одно доброе слово»!\n\nНажми кнопку ниже, чтобы добавить добрых мишек в Telegram.", reply_markup=kb)
 
 def daily_worker():
     last_date = None
