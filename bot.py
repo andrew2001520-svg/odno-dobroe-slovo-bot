@@ -176,7 +176,7 @@ QUOTES = [
 "❤️ Ты нужен этому миру.", "✨ Хорошее обязательно случается."
 ]
 
-BOT_VERSION = "2026.10.08-three-sections"
+BOT_VERSION = "2026.10.31-kind-word-2.0"
 
 def keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
@@ -185,6 +185,7 @@ def keyboard():
     kb.row("🛍️ Наш магазин")
     kb.row("🌐 Наш сайт")
     kb.row("🧸 Наши стикеры")
+    kb.row("💝 Подарки One Kind Word")
     kb.row("❤️ Пространство доброты")
     kb.row("💌 Тебе письмо")
     return kb
@@ -2101,9 +2102,8 @@ def products_load():
                 if not isinstance(product, dict):
                     continue
                 pid = product.get("id")
-                if pid in defaults:
-                    # The four announced product prices are authoritative; retain stock and custom images.
-                    product = {**product, "name": defaults[pid]["name"], "price": defaults[pid]["price"]}
+                # Keep administrator changes, including prices and product names.
+                # Default items are only added when missing from saved data.
                 merged.append(product)
                 seen.add(pid)
             merged.extend(dict(x) for x in DEFAULT_PRODUCTS if x["id"] not in seen)
@@ -2461,8 +2461,34 @@ class PublicStatsHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"error": "not_found"})
 
+    def _send_file(self, filename, content_type):
+        try:
+            with open(filename, "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send_json(404, {"error": "not_found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "public, max-age=3600" if content_type == "image/png" else "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/":
+            self._send_file(os.path.join(os.path.dirname(__file__), "site.html"), "text/html; charset=utf-8")
+            return
+        if path.startswith("/gift-assets/"):
+            name = path[len("/gift-assets/"):]
+            allowed = {entry[3] for entry in GIFT_CARDS}
+            if name not in allowed:
+                self._send_json(404, {"error": "not_found"})
+                return
+            self._send_file(os.path.join(os.path.dirname(__file__), "gift_assets", name), "image/png")
+            return
         if path == "/api/admin/shop/products":
             if not self._shop_admin_ok():
                 self._send_json(403,{"ok":False,"error":"forbidden"}); return
@@ -2572,6 +2598,104 @@ def my_space(message):
             "🎖 <b>Мои достижения</b>\n" + awards +
             "\n\nЗдесь важны не рекорды, а добро, которое ты передаёшь дальше. ❤️")
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=keyboard())
+
+# Цифровые открытки One Kind Word — бесплатно, без NFT и без заявлений об официальном статусе.
+GIFT_CARDS = [
+    ("Kind Heart", "❤️", "Ты важен. Спасибо, что ты есть.", "01_Kind_Heart.png"),
+    ("Hope Heart", "💙", "Не теряй надежду. Впереди ещё много хорошего.", "02_Hope_Heart.png"),
+    ("Magic Heart", "💜", "Ты справишься. Я верю в тебя.", "03_Magic_Heart.png"),
+    ("Angel Heart", "💛", "Пусть рядом будут любовь и поддержка.", "04_Angel_Heart.png"),
+    ("Eternal Heart", "💎", "Ты не один. Тебя ценят.", "05_Eternal_Heart.png"),
+]
+
+@bot.message_handler(func=lambda m: m.text == "💝 Подарки One Kind Word")
+def gifts_menu(message):
+    remember_user(message)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for i, (name, emoji, phrase, filename) in enumerate(GIFT_CARDS):
+        kb.add(types.InlineKeyboardButton(f"{emoji} {name}", callback_data=f"gift_view_{i}"))
+    bot.send_message(message.chat.id, "💝 <b>One Kind Word</b>\n\nВыбери бесплатную открытку и передай доброе слово близкому человеку. Это авторские цифровые открытки проекта, не официальные подарки Telegram.", parse_mode="HTML", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("gift_view_"))
+def gift_view(c):
+    try:
+        i = int(c.data.rsplit("_", 1)[1])
+        name, emoji, phrase, filename = GIFT_CARDS[i]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(c.id, "Подарок не найден")
+        return
+    bot.answer_callback_query(c.id)
+    text = f"{emoji} {name}\n\n{phrase}\n\n❤️ Одно доброе слово"
+    from urllib.parse import urlencode
+    url = "https://t.me/share/url?" + urlencode({"url": SITE_URL, "text": text})
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💌 Передать доброе слово", url=url))
+    kb.add(types.InlineKeyboardButton("🎁 Другие подарки", callback_data="gift_all"))
+    asset = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gift_assets", filename)
+    if os.path.isfile(asset):
+        with open(asset, "rb") as pic:
+            bot.send_photo(c.message.chat.id, pic, caption=text, reply_markup=kb)
+    else:
+        bot.send_message(c.message.chat.id, text, reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data == "gift_all")
+def gift_all(c):
+    bot.answer_callback_query(c.id)
+    gifts_menu(c.message)
+
+# Управление каталогом через Telegram без изменения файлов и деплоя.
+# Команды доступны только администратору.
+@bot.message_handler(commands=["catalog", "price", "stock", "hideproduct", "showproduct", "renameproduct"])
+def catalog_admin(message):
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    command = parts[0].split("@")[0].lower()
+    with PRODUCTS_LOCK:
+        items = products_load()
+        if command == "/catalog":
+            rows = [f"{html.escape(str(x['id']))}: {html.escape(str(x['name']))} — {x['price']} ₽, остаток {x['stock']}, {'виден' if x.get('visible') else 'скрыт'}" for x in items]
+            bot.send_message(message.chat.id, "🛍 Каталог\n" + "\n".join(rows) + "\n\n/price ID СУММА\n/stock ID КОЛИЧЕСТВО\n/hideproduct ID\n/showproduct ID\n/renameproduct ID НОВОЕ_ИМЯ", parse_mode="HTML")
+            return
+        if len(parts) < 2:
+            bot.send_message(message.chat.id, "Укажи ID товара. Список: /catalog")
+            return
+        product = next((x for x in items if x.get("id") == parts[1]), None)
+        if not product:
+            bot.send_message(message.chat.id, "Товар не найден. Список: /catalog")
+            return
+        try:
+            if command in ("/price", "/stock"):
+                if len(parts) != 3: raise ValueError("Не указано число")
+                value = int(parts[2])
+                if command == "/price" and not 1 <= value <= 10000000: raise ValueError("Цена вне диапазона")
+                if command == "/stock" and not 0 <= value <= 100000: raise ValueError("Остаток вне диапазона")
+                product["price" if command == "/price" else "stock"] = value
+            elif command == "/hideproduct": product["visible"] = False
+            elif command == "/showproduct": product["visible"] = True
+            elif command == "/renameproduct":
+                if len(parts) != 3 or not parts[2].strip(): raise ValueError("Укажи новое название")
+                product["name"] = parts[2].strip()[:100]
+            else: return
+            products_save(items)
+        except (ValueError, OSError) as exc:
+            bot.send_message(message.chat.id, f"Не удалось сохранить: {html.escape(str(exc))}", parse_mode="HTML")
+            return
+    bot.send_message(message.chat.id, "✅ Товар обновлён. Изменения сохранены в текущем JSON-файле.")
+
+@bot.message_handler(commands=["backup"])
+def admin_json_backup(message):
+    if not message.from_user or message.from_user.id != ADMIN_ID:
+        return
+    import io
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+        for item in os.listdir("."):
+            if item.endswith(".json") and os.path.isfile(item) and os.path.getsize(item) <= 20 * 1024 * 1024:
+                z.write(item)
+    buffer.seek(0)
+    buffer.name = "odno_dobroe_slovo_backup.zip"
+    bot.send_document(message.chat.id, buffer, caption="🔐 Резервная копия JSON-файлов. Храни в безопасном месте.")
 
 @bot.message_handler(func=lambda m: True)
 def fallback(message):
