@@ -2616,27 +2616,61 @@ def gifts_menu(message):
         kb.add(types.InlineKeyboardButton(f"{emoji} {name}", callback_data=f"gift_view_{i}"))
     bot.send_message(message.chat.id, "💝 <b>One Kind Word</b>\n\nВыбери бесплатную открытку и передай доброе слово близкому человеку. Это авторские цифровые открытки проекта, не официальные подарки Telegram.", parse_mode="HTML", reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("gift_view_"))
-def gift_view(c):
-    try:
-        i = int(c.data.rsplit("_", 1)[1])
-        name, emoji, phrase, filename = GIFT_CARDS[i]
-    except (ValueError, IndexError):
-        bot.answer_callback_query(c.id, "Подарок не найден")
-        return
-    bot.answer_callback_query(c.id)
-    text = f"{emoji} {name}\n\n{phrase}\n\n❤️ Одно доброе слово"
-    from urllib.parse import urlencode
-    url = "https://t.me/share/url?" + urlencode({"url": SITE_URL, "text": text})
+def _gift_share_url(text):
+    # Telegram share/url expects percent-encoded text; spaces must be %20, not '+'.
+    return "https://t.me/share/url?url=" + quote(SITE_URL, safe="") + "&text=" + quote(text, safe="")
+
+
+def _gift_send(chat_id, index, custom_wish=None):
+    name, emoji, phrase, filename = GIFT_CARDS[index]
+    wish = (custom_wish or phrase).strip()
+    text = f"{emoji} {name}\n\n{wish}\n\n❤️ Одно доброе слово"
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("💌 Передать доброе слово", url=url))
+    kb.add(types.InlineKeyboardButton("💌 Передать текст другу", url=_gift_share_url(text)))
+    kb.add(types.InlineKeyboardButton("✍️ Написать своё пожелание", callback_data=f"gift_write_{index}"))
     kb.add(types.InlineKeyboardButton("🎁 Другие подарки", callback_data="gift_all"))
     asset = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gift_assets", filename)
     if os.path.isfile(asset):
         with open(asset, "rb") as pic:
-            bot.send_photo(c.message.chat.id, pic, caption=text, reply_markup=kb)
+            bot.send_photo(chat_id, pic, caption=text, reply_markup=kb)
     else:
-        bot.send_message(c.message.chat.id, text, reply_markup=kb)
+        bot.send_message(chat_id, text, reply_markup=kb)
+    bot.send_message(chat_id, "🖼 Чтобы подарить сердце вместе с изображением, перешли получателю сообщение с картинкой через Telegram. Кнопка «Передать текст другу» отправляет текст и ссылку на сайт.")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("gift_view_"))
+def gift_view(c):
+    try:
+        i = int(c.data.rsplit("_", 1)[1]); GIFT_CARDS[i]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(c.id, "Подарок не найден"); return
+    bot.answer_callback_query(c.id)
+    _gift_send(c.message.chat.id, i)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("gift_write_"))
+def gift_write(c):
+    try:
+        i = int(c.data.rsplit("_", 1)[1]); GIFT_CARDS[i]
+    except (ValueError, IndexError):
+        bot.answer_callback_query(c.id, "Подарок не найден"); return
+    bot.answer_callback_query(c.id)
+    prompt = bot.send_message(c.message.chat.id, "✍️ Напиши своё пожелание (до 400 символов).\nДля отмены отправь /cancel.")
+    bot.register_next_step_handler(prompt, gift_custom_wish, i, c.from_user.id)
+
+
+def gift_custom_wish(message, i, expected_user_id):
+    if not message.from_user or message.from_user.id != expected_user_id:
+        return
+    if (message.text or "").strip().lower() == "/cancel":
+        bot.send_message(message.chat.id, "Создание пожелания отменено."); return
+    wish = (message.text or "").strip()
+    if not wish or len(wish) > 400:
+        prompt = bot.send_message(message.chat.id, "Пожалуйста, отправь текст длиной от 1 до 400 символов или /cancel.")
+        bot.register_next_step_handler(prompt, gift_custom_wish, i, expected_user_id)
+        return
+    _gift_send(message.chat.id, i, wish)
+
 
 @bot.callback_query_handler(func=lambda c: c.data == "gift_all")
 def gift_all(c):
